@@ -13,6 +13,9 @@ let package = Package(
             dependencies: [],
             path: "MiniVocab",
             exclude: [],
+            resources: [
+                .process("Resources")
+            ],
             linkerSettings: [
                 .linkedFramework("AppKit"),
                 .linkedFramework("SwiftUI"),

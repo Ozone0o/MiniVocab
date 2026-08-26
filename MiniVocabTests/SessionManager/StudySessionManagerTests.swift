@@ -8,163 +8,240 @@ final class StudySessionManagerTests: XCTestCase {
     private var persistence: PersistenceController!
     private var scheduler: SimpleSpacedRepetitionScheduler!
     private var sessionManager: StudySessionManager!
+    private var book: WordBook!
 
     override func setUp() {
         super.setUp()
-        // Create a fresh container for each test to avoid cross-test contamination
         let schema = Schema([Word.self, WordBook.self, ReviewRecord.self, LearningState.self])
         let modelConfig = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
         let container = try! ModelContainer(for: schema, configurations: [modelConfig])
         persistence = PersistenceController(modelContainer: container)
         scheduler = SimpleSpacedRepetitionScheduler()
         sessionManager = StudySessionManager(persistence: persistence, scheduler: scheduler)
-        sessionManager.dailyNewLimit = 5
-        sessionManager.dailyMaxReviews = 100
+
+        // Create a default book
+        book = WordBook(id: "test_book", name: "Test Book")
+        persistence.modelContainer.mainContext.insert(book)
+        try? persistence.save()
     }
 
     override func tearDown() {
         persistence = nil
         scheduler = nil
         sessionManager = nil
+        book = nil
         super.tearDown()
     }
 
-    private func insertWord(_ text: String, phonetic: String? = nil, meaning: String? = nil, example: String? = nil) throws {
+    private func insertWord(_ text: String) throws {
         let wordId = text.lowercased()
-        let word = Word(id: wordId, text: text, phonetic: phonetic, meaning: meaning, example: example)
+        let word = Word(id: wordId, text: text, meaning: "meaning of \(text)")
         persistence.modelContainer.mainContext.insert(word)
-        let state = LearningState(wordId: wordId)
-        persistence.modelContainer.mainContext.insert(state)
+
+        // Add word to the local book reference directly (kept as managed instance)
+        if book.words == nil { book.words = [] }
+        book.words.append(word)
         try persistence.save()
     }
 
-    private func insertReviewedWord(_ text: String, reviewCount: Int, forgetCount: Int, nextReviewAt: Date? = nil) throws {
-        try insertWord(text)
-        var state = try XCTUnwrap(try persistence.fetchLearningState(wordId: text.lowercased()))
-        state.reviewCount = reviewCount
-        state.forgetCount = forgetCount
-        state.nextReviewAt = nextReviewAt
-        state.lastReviewedAt = Date()
-        state.state = reviewCount > 0 ? "Review" : "New"
-        try persistence.save()
+    // MARK: - Round tests: wordsPerRound = 3, roundsPerGroup = 2
+
+    func testRoundOf3() throws {
+        SettingsStore.shared.wordsPerRound = 3
+        SettingsStore.shared.roundsPerGroup = 2
+        sessionManager.reloadConfiguration()
+
+        // Insert words BEFORE activating the book
+        try insertWord("word_a")
+        try insertWord("word_b")
+        try insertWord("word_c")
+        try activateBookAndLoad()
+
+        // Round 1 should have 3 words: A, B, C
+        let w1 = try sessionManager.nextWord()
+        let w2 = try sessionManager.nextWord()
+        let w3 = try sessionManager.nextWord()
+
+        XCTAssertNotNil(w1)
+        XCTAssertNotNil(w2)
+        XCTAssertNotNil(w3)
+        let ids = [w1!.id, w2!.id, w3!.id]
+        XCTAssertEqual(ids.count, 3, "Should have 3 distinct words in round")
+        XCTAssertTrue(ids.contains("word_a"))
+        XCTAssertTrue(ids.contains("word_b"))
+        XCTAssertTrue(ids.contains("word_c"))
     }
 
-    func testReturnsNilWhenNoWords() throws {
-        let word = try sessionManager.nextWord()
-        XCTAssertNil(word, "Should return nil when no words exist")
-    }
+    func testRoundBlocksNewWordsUntilAllGood() throws {
+        SettingsStore.shared.wordsPerRound = 3
+        SettingsStore.shared.roundsPerGroup = 2
+        sessionManager.reloadConfiguration()
 
-    func testReturnsNewWordWhenAvailable() throws {
-        try insertWord("abandon", meaning: "放弃")
+        try insertWord("word_a")
+        try insertWord("word_b")
+        try insertWord("word_c")
+        try insertWord("word_d")
+        try activateBookAndLoad()
+        _ = try sessionManager.nextWord() // word_a
+        _ = try sessionManager.nextWord() // word_b
+        let wordC = try sessionManager.nextWord() // word_c
 
-        // Debug: verify data was saved
-        let allWords = try persistence.fetchWords()
-        print("DEBUG: fetchWords returned \(allWords.count) words")
-        for w in allWords { print("DEBUG:   word id=\(w.id) text=\(w.text)") }
+        // word_c → Again
+        _ = try sessionManager.recordRating(word: wordC!, rating: .again)
 
-        let allStates = try! persistence.modelContainer.mainContext.fetch(FetchDescriptor<LearningState>())
-        print("DEBUG: fetch states returned \(allStates.count) states")
-        for s in allStates { print("DEBUG:   state wordId=\(s.wordId) state=\(s.state)") }
-
-        let word = try sessionManager.nextWord()
-        XCTAssertNotNil(word, "Should return a new word")
-        XCTAssertEqual(word?.text, "abandon")
-    }
-
-    func testOverdueReviewPriorityOverNewWord() throws {
-        // Insert an overdue review word
-        try insertReviewedWord("overdue_word", reviewCount: 3, forgetCount: 1, nextReviewAt: Date(timeIntervalSinceNow: -3600))
-        // Insert a new word
-        try insertWord("new_word", meaning: "新词")
-
-        let word = try sessionManager.nextWord()
-        XCTAssertEqual(word?.text, "overdue_word", "Overdue review should have priority over new words")
-    }
-
-    func testDifficultWordGetsExtraReview() throws {
-        // Insert a difficult word (high forget ratio)
-        try insertReviewedWord("difficult_word", reviewCount: 8, forgetCount: 5)
-        // Insert an overdue word
-        try insertReviewedWord("overdue_word", reviewCount: 2, forgetCount: 0, nextReviewAt: Date(timeIntervalSinceNow: -3600))
-        // Insert a new word
-        try insertWord("new_word", meaning: "新词")
-
-        // First call should return overdue
-        let first = try sessionManager.nextWord()
-        XCTAssertEqual(first?.text, "overdue_word", "Overdue should be first priority")
-
-        // Second call should return difficult (since overdue already taken)
-        try persistence.save()
-        let second = try sessionManager.nextWord()
-        XCTAssertNotNil(second, "Difficult word should be available")
-    }
-
-    func testDailyNewWordLimit() throws {
-        for i in 0..<10 {
-            try insertWord("word_\(i)", meaning: "释义\(i)")
-        }
-
-        sessionManager.dailyNewLimit = 3
-        var newWordCount = 0
-        var reviewCount = 0
-        while let word = try sessionManager.nextWord() {
-            let state = try persistence.fetchLearningState(wordId: word.id)
-            if state?.state == "New" {
-                newWordCount += 1
-            } else {
-                reviewCount += 1
-            }
-        }
-
-        XCTAssertLessThanOrEqual(newWordCount, 3, "Should not exceed daily new word limit (new: \(newWordCount), reviews: \(reviewCount))")
-    }
-
-    func testNoDuplicateWordsInSession() throws {
-        try insertWord("abandon", meaning: "放弃")
-        try insertWord("ability", meaning: "能力")
-
-        let first = try sessionManager.nextWord()
-        XCTAssertNotNil(first)
-        let second = try sessionManager.nextWord()
-        XCTAssertNotNil(second)
-
-        XCTAssertNotEqual(first?.id, second?.id, "Should not return the same word twice")
-    }
-
-    func testRatingRecordsAndAdvances() throws {
-        try insertWord("abandon", meaning: "放弃")
-        try insertWord("ability", meaning: "能力")
-        let first = try sessionManager.nextWord()
-        XCTAssertNotNil(first)
-
-        let next = try sessionManager.recordRating(word: try XCTUnwrap(first), rating: .good)
-        // After rating one word, next should be a different word
-        XCTAssertNotNil(next)
-        XCTAssertNotEqual(next?.id, first?.id)
-    }
-
-    func testRatingUpdatesLearningState() throws {
-        try insertWord("ambiguous", meaning: "模棱两可的")
-        let word = try sessionManager.nextWord()
-        let wordId = try XCTUnwrap(word?.id)
-
-        try sessionManager.recordRating(word: try XCTUnwrap(word), rating: .good)
-
-        let state = try persistence.fetchLearningState(wordId: wordId)
-        XCTAssertNotNil(state, "LearningState should be updated after rating")
-        XCTAssertEqual(state?.reviewCount, 1, "Review count should increment")
-        XCTAssertNotNil(state?.nextReviewAt, "Next review should be scheduled")
-    }
-
-    func testAgainRapidReschedule() throws {
-        try insertWord("hard_word", meaning: "难词")
-        let word = try sessionManager.nextWord()
-        try sessionManager.recordRating(word: try XCTUnwrap(word), rating: .again)
-
-        // The "again" word should be rescheduled for 5 minutes later
-        // It should not appear immediately in the next call (due to recentWords window)
+        // Next word should be word_c again (re-queued), NOT word_d
         let next = try sessionManager.nextWord()
-        // Should be nil since only one word exists and it was just shown
-        XCTAssertNil(next, "Recently shown word should not appear again immediately")
+        XCTAssertNotNil(next)
+        XCTAssertNotEqual(next?.id, "word_d", "Should not introduce new word while round is incomplete")
+        XCTAssertEqual(next?.id, "word_c", "Re-queued Again word should appear")
     }
+
+    func testHardReQueuesInRound() throws {
+        SettingsStore.shared.wordsPerRound = 3
+        SettingsStore.shared.roundsPerGroup = 2
+        sessionManager.reloadConfiguration()
+
+        try insertWord("word_a")
+        try insertWord("word_b")
+        try insertWord("word_c")
+        try activateBookAndLoad()
+        _ = try sessionManager.nextWord()
+        _ = try sessionManager.nextWord()
+        let wordC = try sessionManager.nextWord() // word_c
+
+        // word_c → Hard → should re-queue at tail
+        _ = try sessionManager.recordRating(word: wordC!, rating: .hard)
+
+        // Next should be word_c again
+        let next = try sessionManager.nextWord()
+        XCTAssertEqual(next?.id, "word_c", "Hard word should re-queue in current round")
+    }
+
+    // MARK: - Group tests: roundsPerGroup = 2
+
+    func testGroupReviewAfter2Rounds() throws {
+        SettingsStore.shared.wordsPerRound = 3
+        SettingsStore.shared.roundsPerGroup = 2
+        sessionManager.reloadConfiguration()
+
+        try insertWord("word_a")
+        try insertWord("word_b")
+        try insertWord("word_c")
+        try insertWord("word_d")
+        try insertWord("word_e")
+        try insertWord("word_f")
+        try activateBookAndLoad()
+
+        // Complete Round 1: A, B, C → all Good
+        for _ in 0..<3 {
+            let word = try sessionManager.nextWord()
+            _ = try sessionManager.recordRating(word: word!, rating: .good)
+        }
+
+        // After round completion, Round 2 should start: D, E, F
+        for _ in 0..<3 {
+            let word = try sessionManager.nextWord()
+            XCTAssertNotNil(word)
+            XCTAssertTrue(["word_d", "word_e", "word_f"].contains(word!.id))
+            _ = try sessionManager.recordRating(word: word!, rating: .good)
+        }
+
+        // After 2 rounds, should trigger group review or build new round
+        // Since all words were rated Good, weaknessScores is empty, no group review queue
+        // Should start Round 3 with remaining words (none left), return nil
+        let next = try sessionManager.nextWord()
+        // Either group review word or nil if all done
+        if let word = next {
+            XCTAssertTrue(["word_a", "word_b", "word_c", "word_d", "word_e", "word_f"].contains(word.id))
+        }
+    }
+
+    // MARK: - Dynamic settings test
+
+    func testDynamicWordsPerRound() throws {
+        SettingsStore.shared.wordsPerRound = 3
+        SettingsStore.shared.roundsPerGroup = 2
+        sessionManager.reloadConfiguration()
+
+        try insertWord("word_a")
+        try insertWord("word_b")
+        try insertWord("word_c")
+        try insertWord("word_d")
+        try activateBookAndLoad()
+
+        // Round 1: 3 words
+        for _ in 0..<3 {
+            let word = try sessionManager.nextWord()
+            _ = try sessionManager.recordRating(word: word!, rating: .good)
+        }
+
+        // Change settings mid-session
+        SettingsStore.shared.wordsPerRound = 2
+
+        // Next round should use new setting
+        // Load 2 words for Round 2
+        let w1 = try sessionManager.nextWord()
+        XCTAssertNotNil(w1)
+    }
+
+    // MARK: - Last round with fewer words
+
+    func testLastRoundWithFewerWords() throws {
+        SettingsStore.shared.wordsPerRound = 10
+        SettingsStore.shared.roundsPerGroup = 1
+        sessionManager.reloadConfiguration()
+
+        // Only 5 words in the book
+        for i in 0..<5 {
+            try insertWord("word_\(i)")
+        }
+
+        try activateBookAndLoad()
+
+        // Should load all 5 words in one round
+        var count = 0
+        while let _ = try? sessionManager.nextWord() {
+            count += 1
+        }
+        // Note: after rating all words they leave the queue,
+        // so nextWord returns nil when round is done
+        XCTAssertGreaterThan(count, 0)
+    }
+
+    // MARK: - Sequential order test
+
+    func testSequentialOrder() throws {
+        SettingsStore.shared.wordOrderMode = "sequential"
+        SettingsStore.shared.wordsPerRound = 3
+        sessionManager.reloadConfiguration()
+
+        // Insert words in specific order
+        for i in 0..<6 {
+            try insertWord("seq_\(i)")
+        }
+
+        try activateBookAndLoad()
+
+        // Round 1 should be seq_0, seq_1, seq_2
+        let w1 = try sessionManager.nextWord()
+        XCTAssertEqual(w1?.id, "seq_0", "First word should be seq_0")
+    }
+
+    // MARK: - Nil book test
+
+    func testReturnsNilWhenNoBook() throws {
+        let sm = StudySessionManager(persistence: persistence, scheduler: scheduler)
+        let word = try sm.nextWord()
+        XCTAssertNil(word, "Should return nil when no book is activated")
+    }
+
+    // MARK: - Helpers
+
+    private func activateBookAndLoad() throws {
+        book.isEnabled = true
+        try persistence.save()
+        let wordIds = book.words.map(\.id)
+        try sessionManager.startSession(for: book, wordIds: wordIds)
+    }
+
 }

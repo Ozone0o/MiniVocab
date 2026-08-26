@@ -1,5 +1,6 @@
 import SwiftUI
 import AVFAudio
+import AppKit
 
 /// Main floating word card view.
 ///
@@ -8,37 +9,44 @@ import AVFAudio
 /// - Answer State: shows word + phonetic + meaning + rating buttons
 @MainActor
 public struct FloatingWordView: View {
+    @ObservedObject var settingsStore: SettingsStore
     @State private var vm: FloatingWordViewModel
-    @Environment(\.modelContext) private var modelContext
-    @StateObject private var settingsStore = SettingsStore.shared
-    @State private var isSpeaking = false
+    @State private var configurator: FloatingWindowConfigurator
+    let wordBookService: WordBookService
+    @State private var speechSynthesizer = AVSpeechSynthesizer()
 
-    public init(vm: FloatingWordViewModel) {
+    init(vm: FloatingWordViewModel, settingsStore: SettingsStore, persistence: PersistenceController) {
+        _settingsStore = ObservedObject(wrappedValue: settingsStore)
         _vm = State(initialValue: vm)
+        _configurator = State(initialValue: FloatingWindowConfigurator(settingsStore: settingsStore))
+        self.wordBookService = WordBookService(persistence: persistence)
+        self.wordBookService.sessionManager = vm.sessionManager
     }
 
-    @State private var windowSize: CGSize = CGSize(width: 320, height: 190)
-    @State private var isSettingPressed = false
-
     public var body: some View {
-        VStack(spacing: 0) {
-            // Settings button (top-right)
-            settingsButton
+        ZStack {
+            WindowAccessor(onFind: configurator.configure)
 
-            // Content area
-            if vm.sessionComplete {
-                dailyCompleteView
-            } else if !vm.hasWordBooks() {
-                noWordBookView
-            } else if let word = vm.currentWord {
-                contentView(word: word)
-            } else {
-                loadingView
+            VStack(spacing: 0) {
+                settingsButton
+
+                if vm.sessionComplete {
+                    dailyCompleteView
+                } else if !vm.hasWordBooks() {
+                    noWordBookView
+                } else if let word = vm.currentWord {
+                    makeWordContent(word: word)
+                } else {
+                    loadingView
+                }
             }
         }
-        .frame(width: windowSize.width, height: windowSize.height)
-        .opacity(windowOpacity())
-        .background(draggableBackground)
+        .onChange(of: settingsStore.windowOpacity) {
+            configurator.applyOpacity()
+        }
+        .onChange(of: settingsStore.alwaysOnTop) { _, _ in
+            configurator.applyAlwaysOnTop()
+        }
     }
 
     // MARK: - Settings Button
@@ -52,71 +60,114 @@ public struct FloatingWordView: View {
         .buttonStyle(.plain)
         .padding(8)
         .sheet(isPresented: $isSettingPressed) {
-            SettingsView()
+            SettingsView(settingsStore: settingsStore, wordBookService: wordBookService, viewModel: vm)
         }
     }
 
     // MARK: - Content Views
 
-    private func contentView(word: Word) -> some View {
+    @ViewBuilder
+    private func makeWordContent(word: Word) -> some View {
+        let fontSize = Double(settingsStore.fontSize)
+        let exampleFontSize = fontSize * 0.6
+        let meaningFontSize = fontSize * 0.65
+
         VStack(spacing: 8) {
             Spacer()
 
-            // Word
+            // Word + Speaker
             HStack(spacing: 8) {
                 Text(word.text)
-                    .font(.system(size: 28, weight: .medium, design: .default))
+                    .font(.system(size: fontSize, weight: .medium, design: .default))
                     .multilineTextAlignment(.center)
                     .lineLimit(2)
 
-                // Speaker button
                 Button(action: { speak(word.text) }) {
-                    Image(systemName: isSpeaking ? "speaker.wave.2.fill" : "speaker.fill")
+                    Image(systemName: "speaker.fill")
                         .font(.system(size: 14))
                         .foregroundColor(.secondary)
                 }
                 .buttonStyle(.plain)
-                .disabled(isSpeaking)
             }
 
-            // Question State: show example
-            if !vm.isAnswerRevealed, let example = word.example {
-                Text(example)
-                    .font(.system(size: 12, design: .serif))
-                    .foregroundColor(.secondary)
-                    .multilineTextAlignment(.center)
-                    .lineLimit(3)
-                    .padding(.horizontal, 16)
+            // Question or Answer area
+            if !vm.isAnswerRevealed {
+                exampleArea(word: word, exampleFontSize: exampleFontSize)
+            } else {
+                answerArea(meaningFontSize: meaningFontSize)
             }
 
             Spacer()
-
-            // Answer State: show phonetic, meaning, rating buttons
-            if vm.isAnswerRevealed {
-                VStack(spacing: 8) {
-                    if let phonetic = word.phonetic {
-                        Text(phonetic)
-                            .font(.system(size: 11))
-                            .foregroundColor(.secondary)
-                    }
-
-                    Text(word.meaning ?? "暂无释义")
-                        .font(.system(size: 15))
-                        .multilineTextAlignment(.center)
-                }
-
-                ratingButtons
-            } else {
-                // Invisible tap target in question state
-                Color.clear
-                    .frame(height: 40)
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        vm.revealAnswer()
-                    }
-            }
         }
         .padding(.bottom, vm.isAnswerRevealed ? 8 : 16)
+    }
+
+    // MARK: - Question Area
+
+    @ViewBuilder
+    private func exampleArea(word: Word, exampleFontSize: Double) -> some View {
+        let hasExample = !(word.example?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty ?? true)
+
+        if hasExample {
+            Button(action: { reveal(word) }) {
+                VStack(spacing: 8) {
+                    Text(word.example!)
+                        .font(.system(size: exampleFontSize, design: .serif))
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(3)
+                }
+                .frame(maxWidth: .infinity, minHeight: 48)
+                .padding(12)
+                .background(Color(nsColor: .windowBackgroundColor))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+            .buttonStyle(.plain)
+        } else {
+            Button(action: { reveal(word) }) {
+                Text("点击查看释义")
+                    .font(.system(size: exampleFontSize))
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 48)
+                    .padding(12)
+                    .background(Color(nsColor: .windowBackgroundColor))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private func reveal(_ word: Word) {
+        vm.revealAnswer()
+        speak(word.text)
+    }
+
+    // MARK: - Answer Area
+
+    private func answerArea(meaningFontSize: Double) -> some View {
+        VStack(spacing: 8) {
+            if let word = vm.currentWord, let phonetic = word.phonetic {
+                Text(phonetic)
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+            }
+
+            Text(vm.currentWord?.meaning ?? "暂无释义")
+                .font(.system(size: meaningFontSize))
+                .multilineTextAlignment(.center)
+
+            ratingButtons
+        }
     }
 
     // MARK: - Rating Buttons
@@ -154,8 +205,11 @@ public struct FloatingWordView: View {
             Image(systemName: "book.open")
                 .font(.system(size: 32))
                 .foregroundColor(.secondary)
-            Text("请先在设置中导入词书")
+            Text("请先选择词书")
                 .font(.system(size: 13))
+                .foregroundColor(.secondary)
+            Text("在设置 → 词书中开始学习")
+                .font(.system(size: 11))
                 .foregroundColor(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -177,38 +231,56 @@ public struct FloatingWordView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    // MARK: - Draggable Background
-
-    private var draggableBackground: some View {
-        Color.clear
-            .background(
-                Rectangle()
-                    .fill(.ultraThinMaterial)
-                    .cornerRadius(12)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12)
-                            .stroke(.secondary.opacity(0.3), lineWidth: 1)
-                    )
-            )
-    }
-
-    // MARK: - Window Opacity
-
-    private func windowOpacity() -> Double {
-        settingsStore.windowOpacity
-    }
-
     // MARK: - Pronunciation
 
     private func speak(_ text: String) {
-        guard !text.isEmpty, !isSpeaking else { return }
-        isSpeaking = true
+        guard !text.isEmpty else { return }
+        speechSynthesizer.stopSpeaking(at: .immediate)
         let utterance = AVSpeechUtterance(string: text)
-        utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
+        if let voice = AVSpeechSynthesisVoice.speechVoices().first(where: { $0.language.hasPrefix("en") }) {
+            utterance.voice = voice
+        }
         utterance.rate = 0.5
-        AVSpeechSynthesizer().speak(utterance)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            isSpeaking = false
+        speechSynthesizer.speak(utterance)
+    }
+
+    @State private var isSettingPressed = false
+}
+
+// MARK: - Window accessor
+
+/// Finds the real NSWindow behind this SwiftUI View using viewDidMoveToWindow.
+struct WindowAccessor: NSViewRepresentable {
+    var onFind: (NSWindow) -> Void
+
+    func makeNSView(context: Context) -> WindowReaderNSView {
+        let view = WindowReaderNSView(onWindow: onFind)
+        return view
+    }
+
+    func updateNSView(_ nsView: WindowReaderNSView, context: Context) {
+        // No-op: window is captured via viewDidMoveToWindow
+    }
+}
+
+/// Custom NSView that reports itself when added to a window.
+final class WindowReaderNSView: NSView {
+    private let onWindow: (NSWindow) -> Void
+
+    init(onWindow: @escaping (NSWindow) -> Void) {
+        self.onWindow = onWindow
+        super.init(frame: .zero)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let window {
+            onWindow(window)
         }
     }
 }

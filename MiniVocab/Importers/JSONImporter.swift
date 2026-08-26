@@ -18,9 +18,9 @@ final class JSONImporter: WordBookImporter {
             return ImportedWord(
                 word: word,
                 phonetic: entry.phonetic,
-                meaning: entry.meaning,
-                example: entry.example,
-                exampleTranslation: entry.example_translation
+                meaning: entry._meaning,
+                example: entry._example,
+                exampleTranslation: entry._exampleTranslation
             )
         }
     }
@@ -56,6 +56,14 @@ private struct JSONWordEntry: Decodable {
 
     var _meaning: String? {
         meaning ?? definition ?? translation ?? chinese
+    }
+
+    var _example: String? {
+        example ?? sentence ?? context
+    }
+
+    var _exampleTranslation: String? {
+        example_translation ?? sentence_translation
     }
 }
 

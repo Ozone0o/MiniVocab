@@ -19,11 +19,8 @@ enum Rating: Int, CaseIterable {
 
 /// Scheduler protocol for spaced repetition
 protocol ReviewScheduler {
-    /// Calculate the next review interval in seconds for a given rating
-    func nextReviewInterval(for state: LearningState, rating: Rating) -> Double
-
-    /// Update learning state based on rating
-    func updateState(_ state: inout LearningState, rating: Rating)
+    /// Apply a rating to a learning state: update state and return the computed interval in one call.
+    func apply(_ rating: Rating, to state: inout LearningState) -> Double
 
     /// Determine state category after update
     func computeState(for state: LearningState) -> String

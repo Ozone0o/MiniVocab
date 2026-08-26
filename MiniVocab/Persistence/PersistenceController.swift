@@ -68,55 +68,10 @@ public init(isPreview: Bool = false) {
         return state
     }
 
-    func fetchOverdueReviews() throws -> [Word] {
-        let now = Date()
-        let states = try modelContainer.mainContext.fetch(FetchDescriptor<LearningState>())
-        let overdueWordIds = states
-            .filter { $0.nextReviewAt != nil && $0.nextReviewAt! <= now && $0.state != "New" }
-            .map { $0.wordId }
-        return wordsById(overdueWordIds)
-    }
-
-    func fetchDifficultWords() throws -> [Word] {
-        let states = try modelContainer.mainContext.fetch(FetchDescriptor<LearningState>())
-        let difficultWordIds = states
-            .filter { $0.state == "Difficult" || $0.forgetCount >= 3 }
-            .map { $0.wordId }
-        return wordsById(difficultWordIds)
-    }
-
-    func fetchNewWords(limit: Int) throws -> [Word] {
-        let states = try modelContainer.mainContext.fetch(FetchDescriptor<LearningState>())
-        let newWordIds = states.filter { $0.state == "New" }.map { $0.wordId }
-        guard !newWordIds.isEmpty else { return [] }
-        let words = allWords().filter { newWordIds.contains($0.id) }
-        return Array(words.sorted { $0.createdAt < $1.createdAt }.prefix(limit))
-    }
-
-    func fetchReviewedWordIds() throws -> Set<String> {
-        let states = try modelContainer.mainContext.fetch(FetchDescriptor<LearningState>())
-        return Set(states.filter { $0.lastReviewedAt != nil }.map { $0.wordId })
-    }
-
     func fetchReviewRecords(for wordId: String) throws -> [ReviewRecord] {
         let descriptor = FetchDescriptor<ReviewRecord>(sortBy: [SortDescriptor(\.reviewedAt, order: .reverse)])
         let all = try modelContainer.mainContext.fetch(descriptor)
         return all.filter { $0.wordId == wordId }
-    }
-
-    // MARK: - Helpers
-
-    private func allWords() -> [Word] {
-        return try! modelContainer.mainContext.fetch(FetchDescriptor<Word>())
-    }
-
-    private func allLearningStates() -> [LearningState] {
-        return try! modelContainer.mainContext.fetch(FetchDescriptor<LearningState>())
-    }
-
-    private func wordsById(_ ids: [String]) -> [Word] {
-        guard !ids.isEmpty else { return [] }
-        return allWords().filter { ids.contains($0.id) }
     }
 
     // MARK: - Save

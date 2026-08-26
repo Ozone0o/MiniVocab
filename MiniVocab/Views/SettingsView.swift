@@ -1,16 +1,29 @@
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
+import SwiftData
 
 /// Settings window content with 3 sections: 外观, 词书, 数据
 struct SettingsView: View {
-    @State private var selectedTab = 0
-    @StateObject private var settingsStore = SettingsStore.shared
-    @State private var wordBookEntries: [WordBookEntry] = []
+    @ObservedObject var settingsStore: SettingsStore
+    @State private var wordBookEntries: [WordBookUIEntry] = []
     @State private var showFilePicker = false
     @State private var importMessage: String?
+    @State private var deleteConfirmShown = false
+    @State private var isLoading = false
+    @State private var selectedTab = 0
+    @State private var selectedBookForStudy: String?
 
-    private let wordBookService = WordBookService(persistence: PersistenceController(isPreview: false))
+    private let wordBookService: WordBookService
+    let viewModel: FloatingWordViewModel
+    @Environment(\.dismiss) private var dismiss
+
+    init(settingsStore: SettingsStore, wordBookService: WordBookService, viewModel: FloatingWordViewModel) {
+        self.wordBookService = wordBookService
+        _settingsStore = ObservedObject(wrappedValue: settingsStore)
+        self.viewModel = viewModel
+        _selectedBookForStudy = State(initialValue: settingsStore.selectedBookID)
+    }
 
     var body: some View {
         NavigationSplitView {
@@ -27,15 +40,12 @@ struct SettingsView: View {
             default: appearanceSettings
             }
         }
-        .frame(width: 500, height: 400)
-        .toolbar {
-            ToolbarItem(placement: .confirmationAction) {
-                Button("完成") {
-                    NSApp.keyWindow?.close()
-                }
-            }
-        }
+        .frame(width: 520, height: 440)
         .onAppear(perform: loadWordBooks)
+        .onKeyPress(.escape) {
+            dismiss()
+            return .handled
+        }
     }
 
     // MARK: - Appearance
@@ -70,41 +80,53 @@ struct SettingsView: View {
 
             Section("窗口") {
                 Toggle("始终置顶", isOn: $settingsStore.alwaysOnTop)
-                Toggle("开机自动启动", isOn: $settingsStore.launchAtLogin)
             }
         }
         .padding(16)
+        .toolbar {
+            ToolbarItem(placement: .automatic) {
+                Text("按 Esc 退出设置")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
     }
 
     // MARK: - Word Books
 
     private var wordBookSettings: some View {
         VStack(spacing: 12) {
-            if wordBookEntries.isEmpty {
+            if isLoading {
+                ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if wordBookEntries.isEmpty {
                 Text("暂无词书")
                     .foregroundColor(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                List(wordBookEntries, id: \.id) { book in
-                    HStack {
-                        VStack(alignment: .leading) {
-                            Text(book.name)
-                            Text("\(book.wordCount) 个单词")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                        Spacer()
-                        Toggle("", isOn: Binding(
-                            get: { book.isEnabled },
-                            set: { enabled in
-                                Task {
-                                    try? wordBookService.toggleWordBook(id: book.id, enabled: enabled)
-                                    loadWordBooks()
-                                }
+                List(wordBookEntries, id: \.id) { entry in
+                    Button {
+                        selectedBookForStudy = entry.id
+                    } label: {
+                        HStack {
+                            Image(systemName: selectedBookForStudy == entry.id ? "checkmark.circle.fill" : "circle")
+                                .foregroundColor(selectedBookForStudy == entry.id ? .accentColor : .secondary)
+                                .frame(width: 20)
+                            VStack(alignment: .leading) {
+                                Text(entry.name)
+                                Text("\(entry.wordCount) 个单词")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
                             }
-                        ))
+                            Spacer()
+                        }
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
+                    .listRowInsets(EdgeInsets())
+                    .listRowSeparator(.hidden)
                 }
+                .listStyle(.plain)
             }
 
             Divider()
@@ -119,8 +141,28 @@ struct SettingsView: View {
                 }
                 .buttonStyle(.borderedProminent)
 
-                Button("删除词书") {}
-                    .disabled(wordBookEntries.filter {!$0.isEnabled}.isEmpty)
+                Spacer()
+
+                Button("删除词书") {
+                    deleteConfirmShown = true
+                }
+                .disabled(selectedBookForStudy == nil)
+                .buttonStyle(.bordered)
+                .alert("删除词书", isPresented: $deleteConfirmShown) {
+                    Button("取消", role: .cancel) {}
+                    Button("删除", role: .destructive) {
+                        performDelete()
+                    }
+                } message: {
+                    let count = selectedBookIDs.count
+                    Text("确定删除选中的 \(count) 本词书吗？")
+                }
+
+                Button("开始学习") {
+                    startStudy()
+                }
+                .disabled(selectedBookForStudy == nil)
+                .buttonStyle(.borderedProminent)
             }
 
             if let msg = importMessage {
@@ -128,6 +170,15 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundColor(.accentColor)
             }
+
+            Spacer()
+
+            Divider()
+                .padding(.bottom, 4)
+            Text("按 Esc 退出设置")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .frame(maxWidth: .infinity)
         }
         .padding(16)
         .fileImporter(isPresented: $showFilePicker, allowedContentTypes: [
@@ -144,44 +195,46 @@ struct SettingsView: View {
         }
     }
 
-    private func loadWordBooks() {
-        Task {
-            let books = try? wordBookService.fetchWordBooks()
-            wordBookEntries = (books ?? []).map { book in
-                let words = (try? wordBookService.countWords(in: book.id)) ?? 0
-                return WordBookEntry(
-                    id: book.id,
-                    name: book.name,
-                    wordCount: words,
-                    isEnabled: book.isEnabled
-                )
-            }
-        }
-    }
-
-    private func importFile(url: URL) {
-        importMessage = nil
-        Task {
-            do {
-                let name = url.deletingPathExtension().lastPathComponent
-                try wordBookService.importFromFile(fileURL: url, bookName: name)
-                // Auto-enrich examples in background
-                try? wordBookService.enrichExamplesInBackground()
-                importMessage = "导入成功"
-                loadWordBooks()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                    importMessage = nil
-                }
-            } catch {
-                importMessage = "导入失败: \(error.localizedDescription)"
-            }
-        }
-    }
-
     // MARK: - Data
 
     private var dataSettings: some View {
         Form {
+            Section("学习顺序") {
+                Picker("顺序", selection: $settingsStore.wordOrderMode) {
+                    Text("词书顺序").tag("sequential")
+                    Text("随机打乱").tag("random")
+                }
+                .pickerStyle(.segmented)
+            }
+
+            Section("每轮单词数") {
+                HStack {
+                    Stepper("\(settingsStore.wordsPerRound)",
+                            value: $settingsStore.wordsPerRound,
+                            in: 1...100)
+                    Slider(value: Binding(
+                        get: { Double(settingsStore.wordsPerRound) },
+                        set: { settingsStore.wordsPerRound = Int($0) }
+                    ), in: 1.0...100.0, step: 1)
+                        .frame(maxWidth: 200)
+                }
+            }
+
+            Section("每组轮数") {
+                HStack {
+                    Stepper("\(settingsStore.roundsPerGroup)",
+                            value: $settingsStore.roundsPerGroup,
+                            in: 1...20)
+                    Slider(value: Binding(
+                        get: { Double(settingsStore.roundsPerGroup) },
+                        set: { settingsStore.roundsPerGroup = Int($0) }
+                    ), in: 1.0...20.0, step: 1)
+                        .frame(maxWidth: 200)
+                }
+            }
+
+            Divider()
+
             Section("数据管理") {
                 Button("导出学习数据") {
                     exportData()
@@ -194,7 +247,102 @@ struct SettingsView: View {
             }
         }
         .padding(16)
+        .toolbar {
+            ToolbarItem(placement: .automatic) {
+                Text("按 Esc 退出设置")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
     }
+
+    // MARK: - Word Book Operations
+
+    private func loadWordBooks() {
+        isLoading = true
+        Task {
+            do {
+                let books = try wordBookService.fetchWordBooks()
+                wordBookEntries = books.map { book in
+                    let words = (try? wordBookService.countWords(in: book.id)) ?? 0
+                    return WordBookUIEntry(
+                        id: book.id,
+                        name: book.name,
+                        wordCount: words,
+                        isSelected: book.id == settingsStore.selectedBookID
+                    )
+                }
+            } catch {
+                importMessage = "加载词书失败: \(error.localizedDescription)"
+            }
+            isLoading = false
+        }
+    }
+
+    private func toggleSelection(id: String) {
+        // No-op for single selection mode
+    }
+
+    private func importFile(url: URL) {
+        importMessage = nil
+        Task {
+            do {
+                let name = url.deletingPathExtension().lastPathComponent
+                try wordBookService.importFromFile(fileURL: url, bookName: name)
+                importMessage = "导入成功"
+                loadWordBooks()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                    importMessage = nil
+                }
+            } catch {
+                importMessage = "导入失败: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func startStudy() {
+        guard let bookId = selectedBookForStudy else { return }
+        Task {
+            do {
+                let books = try wordBookService.fetchWordBooks()
+                guard let book = books.first(where: { $0.id == bookId }) else { return }
+
+                // Activate the selected book
+                try wordBookService.activateWordBook(id: bookId)
+                settingsStore.selectedBookID = bookId
+
+                // Close settings and reload session
+                await MainActor.run {
+                    viewModel.loadNextWord()
+                    dismiss()
+                }
+            } catch {
+                importMessage = "操作失败: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func performDelete() {
+        Task {
+            let idsToDelete = selectedBookIDs
+            for id in idsToDelete {
+                do {
+                    try wordBookService.deleteWordBook(id: id)
+                } catch {
+                    importMessage = "删除失败: \(error.localizedDescription)"
+                    return
+                }
+            }
+
+            importMessage = "已删除 \(idsToDelete.count) 本词书"
+            loadWordBooks()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                importMessage = nil
+            }
+        }
+    }
+
+    // MARK: - Data Operations
 
     private func exportData() {
         Task {
@@ -241,13 +389,24 @@ struct SettingsView: View {
         let response = await panel.runModal()
         return response == .alertFirstButtonReturn
     }
+
+    // MARK: - Helpers
+
+    private var selectedBookIDs: [String] {
+        guard let id = selectedBookForStudy else { return [] }
+        return [id]
+    }
+
+    private var hasSelection: Bool {
+        selectedBookForStudy != nil
+    }
 }
 
-// MARK: - Word Book Entry
+// MARK: - Word Book UI Entry
 
-private struct WordBookEntry: Identifiable {
+private struct WordBookUIEntry: Identifiable {
     let id: String
     var name: String
     var wordCount: Int
-    var isEnabled: Bool
+    var isSelected: Bool
 }

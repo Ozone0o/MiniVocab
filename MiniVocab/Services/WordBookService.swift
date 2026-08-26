@@ -1,11 +1,12 @@
 import Foundation
+import SwiftUI
 import SwiftData
 
 /// Service for managing word books (CRUD, importing)
 @MainActor
 final class WordBookService {
-
-    private let persistence: PersistenceController
+    public let persistence: PersistenceController
+    var sessionManager: StudySessionManager?
 
     init(persistence: PersistenceController) {
         self.persistence = persistence
@@ -24,35 +25,42 @@ final class WordBookService {
         let importedWords = try importer.importWords(fileURL: fileURL)
         guard !importedWords.isEmpty else { return }
 
-        let bookId = bookName?
-            .trimmingCharacters(in: .whitespaces)
-            .replacingOccurrences(of: " ", with: "_")
-            .lowercased() ?? UUID().uuidString
+        // Use UUID for book ID, filename only for display name
+        let bookId = UUID().uuidString
+        let displayName = bookName ?? bookId
 
-        let wordBook = WordBook(id: bookId, name: bookName ?? bookId)
+        let wordBook = WordBook(id: bookId, name: displayName)
         persistence.modelContainer.mainContext.insert(wordBook)
 
-        var insertedCount = 0
         for imported in importedWords {
             let wordId = imported.word.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
             guard !wordId.isEmpty else { continue }
 
-            // Deduplicate by normalized word
-            if existingWord(with: wordId) != nil {
-                insertedCount += 1 // count but skip insert
-                continue
+            // Deduplicate by normalized word ID
+            if let existingWord = existingWord(with: wordId) {
+                // Add existing word to this book if not already included
+                if (wordBook.words).first(where: { $0.id == existingWord.id }) == nil {
+                    wordBook.words.append(existingWord)
+                }
+                // Fill in empty meaning/example from import
+                if existingWord.meaning == nil, let meaning = imported.meaning {
+                    existingWord.meaning = meaning
+                }
+                if existingWord.example == nil, let example = imported.example {
+                    existingWord.example = example
+                }
+            } else {
+                let word = Word(
+                    id: wordId,
+                    text: imported.word,
+                    phonetic: imported.phonetic,
+                    meaning: imported.meaning,
+                    example: imported.example,
+                    exampleTranslation: imported.exampleTranslation
+                )
+                persistence.modelContainer.mainContext.insert(word)
+                wordBook.words.append(word)
             }
-
-            let word = Word(
-                id: wordId,
-                text: imported.word,
-                phonetic: imported.phonetic,
-                meaning: imported.meaning,
-                example: imported.example,
-                exampleTranslation: imported.exampleTranslation
-            )
-            persistence.modelContainer.mainContext.insert(word)
-            insertedCount += 1
         }
 
         try persistence.save()
@@ -61,15 +69,77 @@ final class WordBookService {
     func deleteWordBook(id: String) throws {
         let books = try persistence.fetchAllWordBooks()
         guard let book = books.first(where: { $0.id == id }) else { return }
+
+        // Get all words in this book before deleting the book
+        let wordIds = Set((book.words).map(\.id))
+
+        // Delete the book
         persistence.modelContainer.mainContext.delete(book)
-        try persistence.save()
+
+        // Clean up orphaned learning data
+        try cleanupOrphanedData(forWordIds: Array(wordIds))
+
+        // If deleting the active book, clear session
+        if book.isEnabled {
+            try? sessionManager?.clearSession()
+        }
     }
 
-    func toggleWordBook(id: String, enabled: Bool) throws {
+    private func cleanupOrphanedData(forWordIds: [String]) throws {
+        let ctx = persistence.modelContainer.mainContext
+
+        // Fetch all remaining words across all remaining books
+        let remainingBooks = try persistence.fetchAllWordBooks()
+        var remainingWordIds: Set<String> = []
+        for book in remainingBooks {
+            for word in book.words {
+                remainingWordIds.insert(word.id)
+            }
+        }
+
+        // Delete states and records for words no longer in any book, and delete orphaned Words
+        let allStates = try ctx.fetch(FetchDescriptor<LearningState>())
+        for state in allStates {
+            if forWordIds.contains(state.wordId) && !remainingWordIds.contains(state.wordId) {
+                ctx.delete(state)
+            }
+        }
+
+        let allRecords = try ctx.fetch(FetchDescriptor<ReviewRecord>())
+        for record in allRecords {
+            if forWordIds.contains(record.wordId) && !remainingWordIds.contains(record.wordId) {
+                ctx.delete(record)
+            }
+        }
+
+        // Delete orphaned Words (no longer referenced by any WordBook)
+        let allWords = try ctx.fetch(FetchDescriptor<Word>())
+        for word in allWords {
+            if forWordIds.contains(word.id) && !remainingWordIds.contains(word.id) {
+                ctx.delete(word)
+            }
+        }
+
+        try ctx.save()
+    }
+
+    // MARK: - Activate Word Book
+
+    /// Activate a word book for study.
+    /// - Responsibility: update DB (only this book enabled), then start session.
+    func activateWordBook(id: String) throws {
         let books = try persistence.fetchAllWordBooks()
         guard let book = books.first(where: { $0.id == id }) else { return }
-        book.isEnabled = enabled
+
+        // Disable all, enable selected — DB is the single source of truth for which book is active
+        for b in books {
+            b.isEnabled = (b.id == id)
+        }
         try persistence.save()
+
+        // Start session: load book words into the session manager (does NOT modify WordBook.isEnabled)
+        let wordIds = book.words.map(\.id)
+        try sessionManager?.startSession(for: book, wordIds: wordIds)
     }
 
     func renameWordBook(id: String, newName: String) throws {
@@ -86,44 +156,13 @@ final class WordBookService {
     }
 
     func countWords(in bookId: String) throws -> Int {
-        let words = try? persistence.fetchWords()
-        return words?.count ?? 0
+        let books = try persistence.fetchAllWordBooks()
+        guard let book = books.first(where: { $0.id == bookId }) else { return 0 }
+        return (book.words).count
     }
 
     private func existingWord(with normalizedText: String) -> Word? {
         try? persistence.fetchWord(id: normalizedText)
-    }
-
-    // MARK: - Example Enrichment
-
-    func enrichExamplesInBackground() throws {
-        let words = try persistence.fetchWords()
-        let wordsWithoutExample = words.filter { $0.example == nil && !$0.text.trimmingCharacters(in: .whitespaces).isEmpty }
-
-        guard !wordsWithoutExample.isEmpty else { return }
-
-        // Copy word data out of MainActor context to avoid sending issues
-        let wordData = wordsWithoutExample.map { ($0.id, $0.text) }
-
-        Task.detached {
-            let provider = await MainActor.run { LocalExampleDatabaseProvider() }
-
-            for (index, (wordId, wordText)) in wordData.enumerated() {
-                if let example = await provider.example(for: wordText) {
-                    await MainActor.run {
-                        let ctx = PersistenceController().modelContainer.mainContext
-                        if let target = (try? ctx.fetch(FetchDescriptor<Word>()))?.first(where: { $0.id == wordId }) {
-                            target.example = example
-                            try? ctx.save()
-                        }
-                    }
-                }
-
-                if index % 100 == 0 {
-                    try? Task.checkCancellation()
-                }
-            }
-        }
     }
 
     // MARK: - Data Export

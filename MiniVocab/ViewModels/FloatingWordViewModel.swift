@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import SwiftData
 
 /// ViewModel for the floating word card. Manages the Question/Answer state machine.
 @Observable
@@ -10,7 +11,7 @@ public final class FloatingWordViewModel {
     var sessionComplete = false
     var errorMessage: String?
 
-    private let sessionManager: StudySessionManager
+    let sessionManager: StudySessionManager
     private let focusManager: FocusManager
 
     init(sessionManager: StudySessionManager, focusManager: FocusManager) {
@@ -29,13 +30,13 @@ public final class FloatingWordViewModel {
     /// Record a rating and load next word
     func rate(_ rating: Rating) {
         guard let word = currentWord else { return }
+
         isAnswerRevealed = false
 
         do {
-            currentWord = try sessionManager.recordRating(word: word, rating: rating)
+            try sessionManager.recordRating(word: word, rating: rating)
+            currentWord = try sessionManager.nextWord()
             sessionComplete = currentWord == nil
-
-            // Restore focus after rating
             focusManager.finishInteraction()
         } catch {
             errorMessage = error.localizedDescription

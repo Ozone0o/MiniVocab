@@ -1,80 +1,54 @@
 import Foundation
 
 /// Simplified spaced repetition scheduler.
-///
-/// Interval strategy (in seconds):
-///   Again   → stability * 0.25, minimum 60s
-///   Hard    → stability * 1.2, minimum 300s
-///   Good    → stability * 2.5
-///   Easy    → stability * 4.0
-///
-/// First review (stability == 0):
-///   Again   → 60s
-///   Hard    → 5 minutes
-///   Good    → 20 minutes
-///   Easy    → 1 day
-///
-/// Difficulty increases as forgetCount increases, reducing intervals for problematic words.
 public final class SimpleSpacedRepetitionScheduler: ReviewScheduler {
 
     public init() {}
 
-    func nextReviewInterval(for state: LearningState, rating: Rating) -> Double {
-        let difficultyFactor = 1.0 - (state.difficulty * 0.1)
-        let baseInterval: Double
+    func apply(_ rating: Rating, to state: inout LearningState) -> Double {
+        state.reviewCount += 1
 
-        switch rating {
-        case .again:
-            baseInterval = max(state.stability * 0.25, 60.0)
-        case .hard:
-            baseInterval = max(state.stability * 1.2, 180.0)
-        case .good:
-            baseInterval = state.stability * 2.5
-        case .easy:
-            baseInterval = state.stability * 4.0
-        }
-
-        // First-time reviews use fixed base intervals
-        let interval: Double
-        if state.stability == 0 {
+        // First review: set initial stability
+        let isFirst = state.stability == 0.0
+        if isFirst {
             switch rating {
-            case .again: interval = 60.0
-            case .hard: interval = 300.0
-            case .good: interval = 1200.0  // 20 minutes
-            case .easy: interval = 86400.0 // 1 day
+            case .again: state.stability = 0.0
+            case .hard: state.stability = 1.0
+            case .good: state.stability = 2.5
+            case .easy: state.stability = 4.0
             }
         } else {
-            interval = max(baseInterval * difficultyFactor, 60.0)
+            switch rating {
+            case .again:
+                state.stability = min(state.stability * 0.5, 10.0)
+            case .hard:
+                state.stability = max(state.stability * 0.9, 1.0)
+            case .good:
+                state.stability *= 1.5
+            case .easy:
+                state.stability *= 2.0
+            }
         }
-
-        return interval
-    }
-
-    func updateState(_ state: inout LearningState, rating: Rating) {
-        state.reviewCount += 1
 
         switch rating {
         case .again:
             state.forgetCount += 1
-            state.stability = min(state.stability * 0.5, 10.0)
-            state.difficulty = min(state.difficulty + 0.3, 10.0)
+            state.difficulty = min(state.difficulty + 1.0, 10.0)
         case .hard:
-            state.difficulty = min(state.difficulty + 0.1, 10.0)
-            state.stability = max(state.stability * 0.9, 1.0)
+            state.difficulty = min(state.difficulty + 0.25, 10.0)
         case .good:
-            state.stability *= 1.5
-            state.difficulty = max(state.difficulty - 0.05, 0.0)
+            state.difficulty = max(state.difficulty - 0.10, 0.0)
         case .easy:
-            state.stability *= 2.0
-            state.difficulty = max(state.difficulty - 0.2, 0.0)
+            state.difficulty = max(state.difficulty - 0.30, 0.0)
         }
 
-        let interval = nextReviewInterval(for: state, rating: rating)
+        let interval = calculateInterval(stability: state.stability, difficulty: state.difficulty, isFirst: isFirst, rating: rating)
         state.nextReviewAt = Date().addingTimeInterval(interval)
         state.lastReviewedAt = Date()
         state.lastRating = rating.rawValue
-
         state.state = computeState(for: state)
+
+        return interval
     }
 
     func computeState(for state: LearningState) -> String {
@@ -95,5 +69,35 @@ public final class SimpleSpacedRepetitionScheduler: ReviewScheduler {
         }
 
         return "Learning"
+    }
+
+    // MARK: - Interval Calculation
+
+    private func calculateInterval(stability: Double, difficulty: Double, isFirst: Bool, rating: Rating) -> Double {
+        if isFirst {
+            switch rating {
+            case .again: return 600.0
+            case .hard: return 1800.0
+            case .good: return 3600.0
+            case .easy: return 86400.0
+            }
+        }
+
+        let difficultyFactor = 1.0 - (difficulty * 0.05)
+        let baseInterval = switch rating {
+        case .again: stability * 0.25
+        case .hard: stability * 1.2
+        case .good: stability * 2.5
+        case .easy: stability * 2.5 * 1.3
+        }
+
+        let goodCalculated = max(baseInterval * difficultyFactor, 1800.0)
+
+        return switch rating {
+        case .again: max(baseInterval, 600.0)
+        case .hard: max(baseInterval, 1200.0, goodCalculated * 0.999)
+        case .good: goodCalculated
+        case .easy: max(baseInterval * difficultyFactor, goodCalculated + 1.0)
+        }
     }
 }

@@ -13,7 +13,10 @@ final class SettingsStore: ObservableObject {
         static let fontSize = "minvocab_fontSize"
         static let windowOpacity = "minvocab_windowOpacity"
         static let alwaysOnTop = "minvocab_alwaysOnTop"
-        static let launchAtLogin = "minvocab_launchAtLogin"
+        static let wordOrderMode = "minvocab_wordOrderMode"
+        static let wordsPerRound = "minvocab_wordsPerRound"
+        static let roundsPerGroup = "minvocab_roundsPerGroup"
+        static let selectedBookID = "minvocab_selectedBookID"
         static let windowFrameOriginX = "minvocab_windowFrameOriginX"
         static let windowFrameOriginY = "minvocab_windowFrameOriginY"
         static let windowFrameWidth = "minvocab_windowFrameWidth"
@@ -34,8 +37,20 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(alwaysOnTop, forKey: Key.alwaysOnTop) }
     }
 
-    @Published var launchAtLogin: Bool {
-        didSet { defaults.set(launchAtLogin, forKey: Key.launchAtLogin) }
+    @Published var wordOrderMode: String {
+        didSet { defaults.set(wordOrderMode, forKey: Key.wordOrderMode) }
+    }
+
+    @Published var wordsPerRound: Int {
+        didSet { defaults.set(wordsPerRound, forKey: Key.wordsPerRound) }
+    }
+
+    @Published var roundsPerGroup: Int {
+        didSet { defaults.set(roundsPerGroup, forKey: Key.roundsPerGroup) }
+    }
+
+    @Published var selectedBookID: String? {
+        didSet { defaults.set(selectedBookID, forKey: Key.selectedBookID) }
     }
 
     var windowFrame: NSRect? {
@@ -73,9 +88,21 @@ final class SettingsStore: ObservableObject {
         if defaults.object(forKey: Key.alwaysOnTop) == nil {
             self.alwaysOnTop = true
         }
-        self.launchAtLogin = defaults.bool(forKey: Key.launchAtLogin)
-        if defaults.object(forKey: Key.launchAtLogin) == nil {
-            self.launchAtLogin = false
+        self.wordOrderMode = defaults.string(forKey: Key.wordOrderMode) ?? "sequential"
+        if defaults.object(forKey: Key.wordOrderMode) == nil {
+            self.wordOrderMode = "sequential"
         }
+        var wpr = defaults.integer(forKey: Key.wordsPerRound)
+        if defaults.object(forKey: Key.wordsPerRound) == nil { wpr = 20 }
+        if wpr < 1 { wpr = 1 }
+        if wpr > 100 { wpr = 100 }
+        self.wordsPerRound = wpr
+
+        var rpg = defaults.integer(forKey: Key.roundsPerGroup)
+        if defaults.object(forKey: Key.roundsPerGroup) == nil { rpg = 5 }
+        if rpg < 1 { rpg = 1 }
+        if rpg > 20 { rpg = 20 }
+        self.roundsPerGroup = rpg
+        self.selectedBookID = defaults.string(forKey: Key.selectedBookID)
     }
 }

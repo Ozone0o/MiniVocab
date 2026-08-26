@@ -1,115 +1,378 @@
 import Foundation
 import SwiftData
 
-/// Manages a single study session — picks the next word based on priority
+/// Manages a single study session using Round/Group architecture.
 @MainActor
 final class StudySessionManager {
     let persistence: PersistenceController
     private let scheduler: ReviewScheduler
-    private var recentWords: [String] = []  // sliding window of recently shown word ids
-    private let recentWindowCount = 10
+    private let exampleDatabase: ExampleDatabase?
+
+    // MARK: - Round configuration (captured at start)
+
+    private var currentRoundSize: Int = 20
+    private var currentGroupRoundCount: Int = 5
+
+    // MARK: - Round state
+
+    private var currentRoundQueue: [Word] = []
+    private var completedRoundsInGroup: Int = 0
+    private var isGroupReviewing: Bool = false
+    private var groupReviewQueue: [Word] = []
+    private var weaknessScores: [String: Int] = [:]
+    private var currentRoundTotal: Int = 0
+    private var roundPassedWords: Set<String> = []
+
+    // MARK: - Order mode
+
+    private var shuffledNewWordIds: [String] = []
+    private var shuffledPosition: Int = 0
+    private var activeBook: WordBook?
+
+    // MARK: - Overdue tracking
+
+    private var overdueQueue: [Word] = []
+
+    // MARK: - Wordbook order tracking
+
+    private var nextNewWordPosition: Int = 0
+    private var bookWordOrder: [String] = []
+    private var introducedWordIds: Set<String> = []
+
+    // MARK: - Current word (for diagnostics)
+
+    var currentWord: Word?
 
     init(persistence: PersistenceController, scheduler: ReviewScheduler) {
         self.persistence = persistence
         self.scheduler = scheduler
+        self.exampleDatabase = ExampleDatabase.load()
+        loadConfiguration()
     }
 
-    /// Daily limits (can be overridden by AppSettings)
-    var dailyNewLimit: Int = 20
-    var dailyMaxReviews: Int = 100
+    // MARK: - Configuration
 
-    /// The current word being shown, or nil if no words available
-    var currentWord: Word?
+    private func loadConfiguration() {
+        currentRoundSize = SettingsStore.shared.wordsPerRound
+        if currentRoundSize < 1 { currentRoundSize = 1 }
+        if currentRoundSize > 100 { currentRoundSize = 100 }
+        currentGroupRoundCount = SettingsStore.shared.roundsPerGroup
+        if currentGroupRoundCount < 1 { currentGroupRoundCount = 1 }
+        if currentGroupRoundCount > 20 { currentGroupRoundCount = 20 }
+    }
+
+    func reloadConfiguration() {
+        var newRoundSize = SettingsStore.shared.wordsPerRound
+        if newRoundSize < 1 { newRoundSize = 1 }
+        if newRoundSize > 100 { newRoundSize = 100 }
+        var newGroupCount = SettingsStore.shared.roundsPerGroup
+        if newGroupCount < 1 { newGroupCount = 1 }
+        if newGroupCount > 20 { newGroupCount = 20 }
+
+        if !isGroupReviewing && currentRoundQueue.isEmpty && groupReviewQueue.isEmpty {
+            currentRoundSize = newRoundSize
+            currentGroupRoundCount = newGroupCount
+        }
+    }
+
+    // MARK: - Start / Restore Session
+
+    /// Start a session with a specific book. Called by WordBookService after enabling the book.
+    func startSession(for book: WordBook, wordIds: [String]) {
+        activeBook = book
+        currentRoundQueue = []
+        completedRoundsInGroup = 0
+        isGroupReviewing = false
+        groupReviewQueue = []
+        weaknessScores = [:]
+        roundPassedWords = .init()
+        shuffledNewWordIds = []
+        shuffledPosition = 0
+        overdueQueue = []
+        nextNewWordPosition = 0
+        introducedWordIds = .init()
+
+        bookWordOrder = wordIds.isEmpty ? (book.words.map(\.id)) : wordIds
+        loadConfiguration()
+    }
+
+    /// Restore the active book on app launch. Finds the enabled book and starts a session.
+    func restoreActiveBook() throws {
+        let books = try persistence.fetchAllWordBooks()
+        if let enabledBook = books.first(where: { $0.isEnabled }) {
+            let wordIds = enabledBook.words.map(\.id)
+            startSession(for: enabledBook, wordIds: wordIds)
+        }
+    }
 
     // MARK: - Next Word
 
     func nextWord() throws -> Word? {
-        // Clear completed daily counters if new day
-        try cleanupDailyReviewCount()
-
-        let overdue = try fetchOverdueWords()
-        let difficult = try fetchDifficultWords(overdueIds: Set(overdue.map(\.id)))
-        let newWords = try fetchNewWords()
-
-        let pool = buildPool(overdue: overdue, difficult: difficult, newWords: newWords)
-
-        guard let word = pool.first else {
+        guard activeBook != nil else {
             currentWord = nil
             return nil
         }
 
-        currentWord = word
-        recentWords.append(word.id)
-        if recentWords.count > recentWindowCount {
-            recentWords.removeFirst()
-        }
-        return word
-    }
+        // 1. Try group review queue
+        if let word = nextFromGroupReview() { return word }
 
-    /// Record a rating and advance to next word
-    func recordRating(word: Word, rating: Rating) throws -> Word? {
-        var state = try persistence.fetchOrCreateLearningState(wordId: word.id)
-        scheduler.updateState(&state, rating: rating)
-        try persistence.save()
+        // 2. Try current round queue
+        if let word = nextFromCurrentRound() { return word }
 
-        // If rated "again", schedule it for quick re-insertion
-        if rating == .again {
-            state.nextReviewAt = Date().addingTimeInterval(300) // 5 minutes
+        // 3. Check if current round is complete
+        if checkRoundCompletion() {
+            if let word = nextFromGroupReview() { return word }
+            if !currentRoundQueue.isEmpty { return nextFromCurrentRound() }
         }
 
-        return try nextWord()
+        // 4. Try overdue long-term reviews
+        if let word = try? nextFromOverdue() { return word }
+
+        // 5. Try current round queue again (for re-queued words)
+        if let word = nextFromCurrentRound() { return word }
+
+        // 6. Build a new round
+        if let word = try buildNewRound() { return word }
+
+        // 7. No words available
+        currentWord = nil
+        return nil
     }
 
-    // MARK: - Internal
+    // MARK: - Unified Preparation (single entry point for all word display)
 
-    private func fetchOverdueWords() throws -> [Word] {
-        var words = try persistence.fetchOverdueReviews()
-        // Filter out words shown recently
-        words.removeAll { recentWords.contains($0.id) }
-        return words
-    }
+    /// Every Word must pass through this before reaching FloatingWordView.
+    /// Handles example enrichment (from local SQLite if missing) and sets currentWord.
+    private func prepareForDisplay(_ word: Word) throws -> Word {
+        let hasExample = !(word.example?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty ?? true)
 
-    private func fetchDifficultWords(overdueIds: Set<String>) throws -> [Word] {
-        var words = try persistence.fetchDifficultWords()
-        words.removeAll { recentWords.contains($0.id) || overdueIds.contains($0.id) }
-        // Prioritize higher forget ratio
-        words.sort { lhs, rhs in
-            let lhsState = try? persistence.fetchLearningState(wordId: lhs.id)
-            let rhsState = try? persistence.fetchLearningState(wordId: rhs.id)
-            let lhsRatio = lhsState.map { Double($0.forgetCount) / max(Double($0.reviewCount), 1) } ?? 0
-            let rhsRatio = rhsState.map { Double($0.forgetCount) / max(Double($0.reviewCount), 1) } ?? 0
-            return lhsRatio > rhsRatio
-        }
-        return Array(words.prefix(5))
-    }
-
-    private func fetchNewWords() throws -> [Word] {
-        // Count already shown new words today
-        let shownToday = try persistence.fetchReviewedWordIds()
-        let allNew = try persistence.fetchNewWords(limit: dailyNewLimit + shownToday.count)
-        let remaining = dailyNewLimit - shownToday.count
-        let filtered = allNew.filter { !recentWords.contains($0.id) && !shownToday.contains($0.id) }
-        return Array(filtered.prefix(max(remaining, 0)))
-    }
-
-    private func buildPool(overdue: [Word], difficult: [Word], newWords: [Word]) -> [Word] {
-        var pool: [Word] = []
-        var seen = Set<String>()
-
-        for word in overdue + difficult + newWords {
-            if seen.insert(word.id).inserted {
-                pool.append(word)
+        if !hasExample,
+           let db = exampleDatabase,
+           let example = db.lookup(for: word.text) {
+            word.example = example
+            do {
+                try persistence.save()
+            } catch {
+                print("[MiniVocab] Failed to save example for word '\(word.text)': \(error)")
             }
         }
 
-        return pool
+        currentWord = word
+        return word
     }
 
-    private func cleanupDailyReviewCount() throws {
-        // Simple day-check: if lastReviewedAt is from a previous day, reset state
-        // In production, store lastResetDate in AppSettings
-        let calendar = Calendar.current
-        guard let state = try persistence.fetchLearningState(wordId: "") else { return }
-        _ = state // placeholder; real implementation stores AppSettings
+    // MARK: - Queue Readers (all go through prepareForDisplay)
+
+    private func nextFromGroupReview() -> Word? {
+        guard isGroupReviewing, !groupReviewQueue.isEmpty else { return nil }
+        let word = groupReviewQueue.removeFirst()
+        return try? prepareForDisplay(word)
+    }
+
+    private func nextFromCurrentRound() -> Word? {
+        guard !currentRoundQueue.isEmpty else { return nil }
+        let word = currentRoundQueue.removeFirst()
+        return try? prepareForDisplay(word)
+    }
+
+    private func nextFromOverdue() throws -> Word? {
+        if overdueQueue.isEmpty {
+            overdueQueue = try fetchOverdueWords()
+        }
+
+        guard !overdueQueue.isEmpty else { return nil }
+
+        let word = overdueQueue.removeFirst()
+        return try prepareForDisplay(word)
+    }
+
+    private func fetchOverdueWords() throws -> [Word] {
+        let states = try persistence.modelContainer.mainContext.fetch(FetchDescriptor<LearningState>())
+        let now = Date()
+        let overdueIds = states
+            .filter { $0.nextReviewAt != nil && $0.nextReviewAt! <= now && $0.state != "New" }
+            .map(\.wordId)
+
+        var words: [Word] = []
+        for id in overdueIds {
+            if let word = try? persistence.fetchWord(id: id),
+               bookWordOrder.contains(id) {
+                words.append(word)
+            }
+        }
+        return words
+    }
+
+    // MARK: - Build New Round
+
+    private func buildNewRound() throws -> Word? {
+        if !currentRoundQueue.isEmpty {
+            return nextFromCurrentRound()
+        }
+
+        if completedRoundsInGroup >= currentGroupRoundCount {
+            startGroupReview()
+            return nextFromGroupReview()
+        }
+
+        guard activeBook != nil else { return nil }
+
+        var newWords: [Word] = []
+
+        if SettingsStore.shared.wordOrderMode == "random" && shuffledNewWordIds.isEmpty {
+            shuffledNewWordIds = bookWordOrder.shuffled()
+            shuffledPosition = 0
+        }
+
+        if SettingsStore.shared.wordOrderMode == "random" {
+            let count = min(currentRoundSize, shuffledNewWordIds.count - shuffledPosition)
+            for i in 0..<count {
+                let idx = shuffledPosition + i
+                if idx < shuffledNewWordIds.count,
+                   let word = try? persistence.fetchWord(id: shuffledNewWordIds[idx]) {
+                    newWords.append(word)
+                }
+            }
+            shuffledPosition += count
+        } else {
+            let start = nextNewWordPosition
+            let end = min(start + currentRoundSize, bookWordOrder.count)
+            for i in start..<end {
+                let id = bookWordOrder[i]
+                if let word = try? persistence.fetchWord(id: id) {
+                    newWords.append(word)
+                }
+            }
+            nextNewWordPosition = end
+        }
+
+        guard !newWords.isEmpty else {
+            if completedRoundsInGroup > 0 {
+                startGroupReview()
+                return nextFromGroupReview()
+            }
+            currentWord = nil
+            return nil
+        }
+
+        currentRoundQueue = newWords
+        currentRoundTotal = newWords.count
+        roundPassedWords = .init()
+        introducedWordIds.formUnion(newWords.map(\.id))
+
+        return try nextFromCurrentRound()
+    }
+
+    // MARK: - Record Rating
+
+    func recordRating(word: Word, rating: Rating) throws {
+        var state = try persistence.fetchOrCreateLearningState(wordId: word.id)
+
+        let previousInterval: Double
+        if let lastReviewed = state.lastReviewedAt, let nextRev = state.nextReviewAt {
+            previousInterval = nextRev.timeIntervalSince(lastReviewed)
+        } else {
+            previousInterval = 0
+        }
+
+        let interval = scheduler.apply(rating, to: &state)
+
+        let reviewRecord = ReviewRecord(
+            wordId: word.id,
+            rating: rating.rawValue,
+            previousInterval: previousInterval,
+            nextInterval: interval
+        )
+        persistence.modelContainer.mainContext.insert(reviewRecord)
+
+        try persistence.save()
+
+        switch rating {
+        case .again: handleAgain(word: word)
+        case .hard: handleHard(word: word)
+        case .good: handleGood(word: word)
+        case .easy: handleEasy(word: word)
+        }
+    }
+
+    // MARK: - Rating Handlers
+
+    private func handleAgain(word: Word) {
+        weaknessScores[word.id, default: 0] += 3
+        roundPassedWords.remove(word.id)
+
+        let insertIndex = min(2, currentRoundQueue.count)
+        currentRoundQueue.insert(word, at: insertIndex)
+    }
+
+    private func handleHard(word: Word) {
+        weaknessScores[word.id, default: 0] += 1
+        roundPassedWords.remove(word.id)
+
+        currentRoundQueue.append(word)
+    }
+
+    private func handleGood(word: Word) {
+        roundPassedWords.insert(word.id)
+    }
+
+    private func handleEasy(word: Word) {
+        roundPassedWords.insert(word.id)
+    }
+
+    // MARK: - Round Completion Check
+
+    func checkRoundCompletion() -> Bool {
+        guard currentRoundTotal > 0, currentRoundQueue.isEmpty else { return false }
+
+        if roundPassedWords.count >= currentRoundTotal {
+            completedRoundsInGroup += 1
+
+            for id in weaknessScores.keys where roundPassedWords.contains(id) {
+                if let word = try? persistence.fetchWord(id: id) {
+                    if !groupReviewQueue.contains(where: { $0.id == word.id }) {
+                        groupReviewQueue.append(word)
+                    }
+                }
+            }
+
+            currentRoundQueue = []
+            currentRoundTotal = 0
+            roundPassedWords = .init()
+
+            return true
+        }
+
+        return false
+    }
+
+    // MARK: - Group Review
+
+    private func startGroupReview() {
+        isGroupReviewing = true
+
+        groupReviewQueue.sort { lhs, rhs in
+            (weaknessScores[lhs.id] ?? 0) > (weaknessScores[rhs.id] ?? 0)
+        }
+    }
+
+    // MARK: - Switch/Reset
+
+    func clearSession() {
+        activeBook = nil
+        currentRoundQueue = []
+        completedRoundsInGroup = 0
+        isGroupReviewing = false
+        groupReviewQueue = []
+        weaknessScores = [:]
+        roundPassedWords = .init()
+        shuffledNewWordIds = []
+        shuffledPosition = 0
+        overdueQueue = []
+        nextNewWordPosition = 0
+        bookWordOrder = []
+        introducedWordIds = .init()
     }
 }

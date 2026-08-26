@@ -9,12 +9,12 @@ class WordBook {
     var isEnabled: Bool
 
     @Relationship(deleteRule: .nullify)
-    var words: [Word]? = []
+    var words: [Word] = []
 
     init(id: String, name: String) {
         self.id = id
         self.name = name
         self.createdAt = Date()
-        self.isEnabled = true
+        self.isEnabled = false
     }
 }

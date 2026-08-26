@@ -50,31 +50,28 @@ final class TSVImporter: WordBookImporter {
         let exampleTranslation: Int?
     }
 
+    private static let wordKeys = ["word", "english", "term", "vocabulary", "单词"]
+    private static let meaningKeys = ["meaning", "definition", "translation", "chinese", "释义", "中文"]
+    private static let phoneticKeys = ["phonetic", "ipa", "pronunciation", "音标"]
+    private static let exampleKeys = ["example", "sentence", "context", "example_sentence", "例句"]
+
     private func detectColumnIndices(header: [String]) -> ColumnIndices {
-        let indexFor = { (column: FieldColumn) -> Int? in
-            header.firstIndex { $0 == column.rawValue }
+        let indexFor = { (column: String) -> Int? in
+            header.firstIndex { $0 == column }
         }
 
-        let wordCol = FieldColumn.allCases.first { header.contains($0.rawValue) }
-        let meaningCol = FieldColumn.allCases.first { col in
-            col != wordCol && header.contains(col.rawValue)
-        }
-        let phoneticCol = FieldColumn.allCases.first { col in
-            col != .word && col != .meaning && col != .example && col != .exampleTranslation
-            && header.contains(col.rawValue)
-        }
-        let exampleCol = FieldColumn.allCases.first { col in
-            (col == .example || col == .context || col == .sentence || col == .example_sentence)
-            && header.contains(col.rawValue)
-        }
-        // Example translation — break into if-else to avoid compiler type-inference timeout
-        let exampleTranslationCol: FieldColumn?
-        if let et = FieldColumn.allCases.first(where: { $0 == .exampleTranslation && header.contains($0.rawValue) }) {
-            exampleTranslationCol = et
-        } else if let et = FieldColumn.allCases.first(where: { $0 == .sentence_translation && header.contains($0.rawValue) }) {
-            exampleTranslationCol = et
-        } else if let et = FieldColumn.allCases.first(where: { $0.rawValue == "例句翻译" && header.contains($0.rawValue) }) {
-            exampleTranslationCol = et
+        let wordCol = Self.wordKeys.first { header.contains($0) }
+        let meaningCol = Self.meaningKeys.first { header.contains($0) }
+        let phoneticCol = Self.phoneticKeys.first { header.contains($0) }
+        let exampleCol = Self.exampleKeys.first { header.contains($0) }
+
+        let exampleTranslationCol: Int?
+        if let idx = indexFor("example_translation") {
+            exampleTranslationCol = idx
+        } else if let idx = indexFor("sentence_translation") {
+            exampleTranslationCol = idx
+        } else if let idx = indexFor("例句翻译") {
+            exampleTranslationCol = idx
         } else {
             exampleTranslationCol = nil
         }
@@ -82,9 +79,9 @@ final class TSVImporter: WordBookImporter {
         return ColumnIndices(
             word: wordCol.map { indexFor($0) ?? 0 } ?? 0,
             phonetic: phoneticCol.flatMap { indexFor($0) },
-            meaning: (meaningCol ?? wordCol).flatMap { indexFor($0) },
+            meaning: meaningCol.flatMap { indexFor($0) },
             example: exampleCol.flatMap { indexFor($0) },
-            exampleTranslation: exampleTranslationCol.flatMap { indexFor($0) }
+            exampleTranslation: exampleTranslationCol
         )
     }
 }
