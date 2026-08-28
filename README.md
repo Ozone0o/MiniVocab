@@ -78,11 +78,7 @@ The settings sheet lets you adjust the app around your workspace:
 
 No account is required. Vocabulary books and learning progress stay on your Mac. SwiftData stores the local vocabulary and review state, while UserDefaults stores appearance and study settings. Learning data can be exported as JSON from the Data settings.
 
-The bundled `examples.sqlite` is a read-only application resource used to look up example sentences when an imported word does not already have one. Its data provenance and redistribution terms should be verified before distributing a packaged release.
-
-## Build from source
-
-MiniVocab is a Swift Package with a native macOS executable target. The repository currently contains source code rather than a packaged `.app` or `.dmg`.
+The bundled `examples.sqlite` is a read-only application resource used to look up example sentences when an imported word does not already have one. 
 
 Requirements:
 
@@ -99,7 +95,7 @@ swift build
 swift test
 ```
 
-You can also open `Package.swift` in Xcode and build the `MiniVocab` scheme. Packaged builds belong in [GitHub Releases](https://github.com/Ozone0o/MiniVocab/releases), not in the source tree.
+You can also open `Package.swift` in Xcode and build the `MiniVocab` scheme. 
 
 ## Under the hood
 
@@ -115,7 +111,6 @@ For the implementation map, see [architecture.md](architecture.md).
 | `examples.sqlite` application resource | SwiftData learning progress |
 |  | UserDefaults preferences and exported data |
 
-Personal vocabulary books, learning history, runtime databases, preferences, and exports should stay outside the GitHub repository.
 
 ## License
 
