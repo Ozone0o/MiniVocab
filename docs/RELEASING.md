@@ -34,6 +34,14 @@ MiniVocab is a Swift Package with a macOS executable target. Source control shou
      build
    ```
 
+   To assemble the app bundle with the checked-in icon and package a DMG in one step, run:
+
+   ```bash
+   ./scripts/package-dmg.sh
+   ```
+
+   The helper copies `Packaging/Info.plist`, includes `MiniVocab.icns`, signs the local build ad hoc, creates `BuildOutput/MiniVocab.dmg`, and refreshes the tracked `MiniVocab.dmg` download.
+
 5. If a Developer ID certificate is available, sign the exported app bundle and verify it:
 
    ```bash
