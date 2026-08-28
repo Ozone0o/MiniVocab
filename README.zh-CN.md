@@ -78,11 +78,8 @@ resilient,有韧性的,She remained resilient after the setback.
 
 MiniVocab 不需要账号。词书和学习进度留在你的 Mac 上：SwiftData 保存词书和复习状态，UserDefaults 保存外观及学习设置。学习数据可以在“数据”设置中导出为 JSON。
 
-仓库里的 `examples.sqlite` 是只读的应用资源，用来在导入的单词没有例句时查找例句。正式分发打包版本前，还需要确认这份数据的来源、许可证和署名要求。
+仓库里的 `examples.sqlite` 是只读的应用资源，用来在导入的单词没有例句时查找例句。
 
-## 从源码运行
-
-MiniVocab 是一个带原生 macOS 可执行目标的 Swift Package。仓库不保存编译好的 `.app` 或 `.dmg`。
 
 环境要求：
 
@@ -99,7 +96,7 @@ swift build
 swift test
 ```
 
-也可以在 Xcode 中打开 `Package.swift`，构建 `MiniVocab` scheme。打包后的 `.dmg` 放在 [GitHub Releases](https://github.com/Ozone0o/MiniVocab/releases)，而不是源码目录里。
+也可以在 Xcode 中打开 `Package.swift`，构建 `MiniVocab` scheme。
 
 ## 技术实现
 
@@ -113,7 +110,6 @@ MiniVocab 使用 Swift、SwiftUI、AppKit 和 SwiftData，没有外部 Swift Pac
 | 应用自带的 `examples.sqlite` | SwiftData 学习进度 |
 |  | UserDefaults 设置和导出的数据 |
 
-个人词书、学习记录、运行时数据库、偏好设置和导出文件都不应进入 GitHub 仓库。
 
 ## 许可证
 
