@@ -1,93 +1,122 @@
 # MiniVocab
 
-MiniVocab is a lightweight macOS vocabulary learning app designed to stay unobtrusively on your desktop while you work or study.
+English | [简体中文](README.zh-CN.md)
 
-## Features
+A small macOS vocabulary card designed to live beside whatever you're already doing.
 
-- Lightweight floating vocabulary window
-- Custom vocabulary books
-- CSV / TSV / TXT / JSON import
-- Local vocabulary storage
-- Review scheduling
-- Example sentences
-- Pronunciation
-- Persistent learning progress
-- Adjustable font size and transparency
-- Always-on-top mode
-- Offline-first design
+Instead of opening a vocabulary app whenever you want to study, keep MiniVocab near your work. Glance at a word while code is compiling, a page is loading, or a task is between steps; recall what you can, then continue.
 
-## Screenshots
+<p align="center">
+  <a href="https://github.com/Ozone0o/MiniVocab/releases/latest"><strong>Download for macOS</strong></a>
+</p>
 
-Screenshots can be added here.
+<p align="center">
+  <img src="docs/hero.png" width="900" alt="MiniVocab floating beside a desktop workspace">
+</p>
 
-## Requirements
+## Learn without leaving what you're doing
 
-- macOS 14 or later
-- Swift 6.0 or later
-- Xcode 16 or later (when building through Xcode)
+MiniVocab is meant to stay at the edge of your desktop while you write code, read a paper, browse the web, or work. It does not ask you to switch into a separate study mode. A short pause is enough for one card.
 
-## Build
+## See it, recall it, move on
 
-MiniVocab is distributed as a Swift Package. From the repository root:
+<p align="center">
+  <img src="docs/review-demo.gif" width="720" alt="MiniVocab review demo">
+</p>
 
-```bash
-swift build
+The loop is deliberately short: see the word, think for a moment, reveal the answer, rate it, and move on.
+
+## A deliberately small learning loop
+
+The first state shows the word and an example sentence when one is available. Revealing the card shows the phonetic spelling, meaning, and the four review choices used by the current interface: `忘记`, `模糊`, `认识`, and `熟知`.
+
+<p align="center">
+  <img src="docs/study-flow.png" width="1000" alt="MiniVocab question and answer states">
+</p>
+
+Review records and per-word learning state are saved locally. The next session continues from the local data instead of starting over.
+
+## Bring your own vocabulary
+
+MiniVocab does not require a fixed word list. Import the vocabulary you already use, then choose a book and start learning.
+
+Supported formats:
+
+- CSV
+- TSV
+- TXT
+- JSON
+
+CSV and TSV files use a header row. TXT files can contain a word and meaning separated by spaces, tabs, or pipes. JSON files use an array of vocabulary objects. CSV import also handles quoted fields, commas inside quotes, escaped quotes, UTF-8 BOM, empty fields, and CRLF line endings.
+
+A small example:
+
+```csv
+word,meaning,example
+serendipity,an unexpected good discovery,I found the book by serendipity.
+resilient,able to recover,She remained resilient after the setback.
 ```
 
-You can also open `Package.swift` in Xcode and build the `MiniVocab` scheme.
+Imported books are local user data; they are not part of this repository.
 
-## Tests
+## Make it fit your desktop
+
+<p align="center">
+  <img src="docs/settings.png" width="1000" alt="MiniVocab settings and vocabulary book management">
+</p>
+
+The settings sheet lets you adjust the app around your workspace:
+
+- font size and window opacity
+- always-on-top behavior
+- sequential or shuffled word order
+- words per round and rounds per group
+- vocabulary book selection, import, deletion, and start learning
+- learning-data export and learning-record reset
+
+## Local-first
+
+No account is required. Vocabulary books and learning progress stay on your Mac. SwiftData stores the local vocabulary and review state, while UserDefaults stores appearance and study settings. Learning data can be exported as JSON from the Data settings.
+
+The bundled `examples.sqlite` is a read-only application resource used to look up example sentences when an imported word does not already have one. Its data provenance and redistribution terms should be verified before distributing a packaged release.
+
+## Build from source
+
+MiniVocab is a Swift Package with a native macOS executable target. The repository currently contains source code rather than a packaged `.app` or `.dmg`.
+
+Requirements:
+
+- macOS 14 or later
+- Swift 6.0 toolchain
+- Xcode 16 or later when building through Xcode
+
+Clone the repository and run:
 
 ```bash
+git clone https://github.com/Ozone0o/MiniVocab.git
+cd MiniVocab
+swift build
 swift test
 ```
 
-## Vocabulary Import
+You can also open `Package.swift` in Xcode and build the `MiniVocab` scheme. Packaged builds belong in [GitHub Releases](https://github.com/Ozone0o/MiniVocab/releases), not in the source tree.
 
-MiniVocab supports user-provided vocabulary books in:
+## Under the hood
 
-- CSV with a header row
-- TSV with a header row
-- TXT lines containing a word and meaning
-- JSON arrays of vocabulary objects
+MiniVocab uses Swift, SwiftUI, AppKit, and SwiftData with no external package dependencies. The main window is a native `WindowGroup` window configured for floating, resizing, movement, opacity, and always-on-top behavior.
 
-CSV import supports quoted fields, commas inside quoted fields, escaped quotes, UTF-8 BOM, empty fields, and CRLF line endings.
+For the implementation map, see [architecture.md](architecture.md).
 
-## Repository and User Data
+## Repository and user data
 
-The repository contains the application source, tests, documentation, and required application resources. Imported vocabulary books and learning data remain on the user's Mac:
+| Repository | Your Mac |
+| --- | --- |
+| Source code, tests, docs, and required resources | Imported vocabulary books |
+| `examples.sqlite` application resource | SwiftData learning progress |
+|  | UserDefaults preferences and exported data |
 
-```text
-Repository
-├── source code
-├── tests
-├── documentation
-└── required application resources
-
-User's Mac
-├── imported vocabulary books
-├── learning progress
-├── preferences
-└── generated / exported user data
-```
-
-Personal learning data is not part of the GitHub repository. Users provide their own CSV, TSV, TXT, or JSON files through MiniVocab.
-
-## Privacy
-
-- Vocabulary books stay on the user's Mac.
-- Learning progress is stored locally by SwiftData.
-- Preferences are stored locally using UserDefaults.
-- MiniVocab does not require a cloud account or network access.
-
-## Example Sentences
-
-The bundled `examples.sqlite` resource contains example sentences used to enrich vocabulary cards when an imported word does not already have an example. It is application data, not a user vocabulary book. Confirm the database's source, license, and required attribution before redistributing a public release; this project makes no claim that the sentence data is original.
-
-## Releases
-
-Release `.dmg` files belong in [GitHub Releases](https://github.com/Ozone0o/MiniVocab/releases). The source tree does not track compiled `.app`, `.dmg`, or debug-symbol files.
+Personal vocabulary books, learning history, runtime databases, preferences, and exports should stay outside the GitHub repository.
 
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE).
+MiniVocab is licensed under the [Apache License 2.0](LICENSE).
