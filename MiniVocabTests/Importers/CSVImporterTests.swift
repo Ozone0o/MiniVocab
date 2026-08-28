@@ -163,4 +163,114 @@ final class CSVImporterTests: XCTestCase {
         XCTAssertTrue(words[0].word.contains("café"))
         XCTAssertTrue(words[1].word.contains("naïve"))
     }
+
+    // MARK: - Quoted Field Tests
+
+    func testCSVQuotedFields() throws {
+        let content = "word,meaning\napple,\"a fruit, usually red\"\n"
+        try writeTestFile(name: "quoted.csv", content: content)
+        let url = tempDir.appendingPathComponent("quoted.csv")
+
+        let words = try importer.importWords(fileURL: url)
+        XCTAssertEqual(words.count, 1)
+        XCTAssertEqual(words[0].word, "apple")
+        XCTAssertEqual(words[0].meaning, "a fruit, usually red")
+    }
+
+    func testCSVCommaInMeaning() throws {
+        let content = "word,meaning,example\napple,\"a fruit, usually red\",\"I bought an apple, yesterday.\"\n"
+        try writeTestFile(name: "comma_in_field.csv", content: content)
+        let url = tempDir.appendingPathComponent("comma_in_field.csv")
+
+        let words = try importer.importWords(fileURL: url)
+        XCTAssertEqual(words.count, 1)
+        XCTAssertEqual(words[0].meaning, "a fruit, usually red")
+        XCTAssertEqual(words[0].example, "I bought an apple, yesterday.")
+    }
+
+    func testCSVEscapedQuotes() throws {
+        let content = "word,meaning\nquote,\"something \"\"quoted\"\"\"\n"
+        try writeTestFile(name: "escaped.csv", content: content)
+        let url = tempDir.appendingPathComponent("escaped.csv")
+
+        let words = try importer.importWords(fileURL: url)
+        XCTAssertEqual(words.count, 1)
+        XCTAssertEqual(words[0].meaning, "something \"quoted\"")
+    }
+
+    func testCSVQuotedExampleWithEscapedQuotesAndComma() throws {
+        let content = "word,meaning,example\nquote,\"something \"\"quoted\"\"\",\"He said, \"\"hello\"\".\"\n"
+        try writeTestFile(name: "complex_quoted.csv", content: content)
+        let url = tempDir.appendingPathComponent("complex_quoted.csv")
+
+        let words = try importer.importWords(fileURL: url)
+        XCTAssertEqual(words.count, 1)
+        XCTAssertEqual(words[0].meaning, "something \"quoted\"")
+        XCTAssertEqual(words[0].example, "He said, \"hello\".")
+    }
+
+    func testCSVUTF8BOM() throws {
+        let content = "\u{FEFF}word,meaning\nabandon,放弃\n"
+        try writeTestFile(name: "bom.csv", content: content)
+        let url = tempDir.appendingPathComponent("bom.csv")
+
+        let words = try importer.importWords(fileURL: url)
+        XCTAssertEqual(words.count, 1)
+        XCTAssertEqual(words[0].word, "abandon")
+        XCTAssertEqual(words[0].meaning, "放弃")
+    }
+
+    func testCSVEmptyField() throws {
+        let content = "word,meaning,example\napple,,An empty meaning is allowed.\n"
+        try writeTestFile(name: "empty_field.csv", content: content)
+        let url = tempDir.appendingPathComponent("empty_field.csv")
+
+        let words = try importer.importWords(fileURL: url)
+        XCTAssertEqual(words.count, 1)
+        XCTAssertEqual(words[0].word, "apple")
+        XCTAssertNil(words[0].meaning)
+        XCTAssertEqual(words[0].example, "An empty meaning is allowed.")
+    }
+
+    func testCSVCRLFLines() throws {
+        let content = "word,meaning\r\nabandon,放弃\r\nability,能力\r\n"
+        try writeTestFile(name: "crlf.csv", content: content)
+        let url = tempDir.appendingPathComponent("crlf.csv")
+
+        let words = try importer.importWords(fileURL: url)
+        XCTAssertEqual(words.count, 2)
+        XCTAssertEqual(words[0].word, "abandon")
+        XCTAssertEqual(words[1].word, "ability")
+    }
+
+    func testCSVQuotedFieldMayContainLineBreak() throws {
+        let content = "word,meaning\napple,\"a fruit\nusually red\"\n"
+        try writeTestFile(name: "quoted_line_break.csv", content: content)
+        let url = tempDir.appendingPathComponent("quoted_line_break.csv")
+
+        let words = try importer.importWords(fileURL: url)
+        XCTAssertEqual(words.count, 1)
+        XCTAssertEqual(words[0].meaning, "a fruit\nusually red")
+    }
+
+    func testCSVMalformedRowSkipped() throws {
+        let content = "word,meaning\nvalid,good\ninvalid_line\nanother,valid\n"
+        try writeTestFile(name: "malformed.csv", content: content)
+        let url = tempDir.appendingPathComponent("malformed.csv")
+
+        let words = try importer.importWords(fileURL: url)
+        XCTAssertEqual(words.count, 2)
+        XCTAssertEqual(words[0].word, "valid")
+        XCTAssertEqual(words[1].word, "another")
+    }
+
+    func testCSVUnterminatedQuotedRowIsSkipped() throws {
+        let content = "word,meaning\nvalid,good\nbroken,\"unterminated\n"
+        try writeTestFile(name: "unterminated.csv", content: content)
+        let url = tempDir.appendingPathComponent("unterminated.csv")
+
+        let words = try importer.importWords(fileURL: url)
+        XCTAssertEqual(words.count, 1)
+        XCTAssertEqual(words[0].word, "valid")
+    }
 }

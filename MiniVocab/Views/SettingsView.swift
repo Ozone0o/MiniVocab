@@ -1,7 +1,6 @@
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
-import SwiftData
 
 /// Settings window content with 3 sections: 外观, 词书, 数据
 struct SettingsView: View {
@@ -268,8 +267,7 @@ struct SettingsView: View {
                     return WordBookUIEntry(
                         id: book.id,
                         name: book.name,
-                        wordCount: words,
-                        isSelected: book.id == settingsStore.selectedBookID
+                        wordCount: words
                     )
                 }
             } catch {
@@ -277,10 +275,6 @@ struct SettingsView: View {
             }
             isLoading = false
         }
-    }
-
-    private func toggleSelection(id: String) {
-        // No-op for single selection mode
     }
 
     private func importFile(url: URL) {
@@ -305,7 +299,7 @@ struct SettingsView: View {
         Task {
             do {
                 let books = try wordBookService.fetchWordBooks()
-                guard let book = books.first(where: { $0.id == bookId }) else { return }
+                guard books.contains(where: { $0.id == bookId }) else { return }
 
                 // Activate the selected book
                 try wordBookService.activateWordBook(id: bookId)
@@ -352,7 +346,7 @@ struct SettingsView: View {
                 savePanel.allowedContentTypes = [.json]
                 savePanel.nameFieldStringValue = "learning_data.json"
 
-                let result = await savePanel.runModal()
+                let result = savePanel.runModal()
                 if result == .OK, let url = savePanel.url {
                     try data.write(to: url)
                 }
@@ -364,7 +358,7 @@ struct SettingsView: View {
 
     private func resetLearningData() {
         Task {
-            let confirm = await confirmReset()
+            let confirm = confirmReset()
             if confirm {
                 do {
                     try wordBookService.resetLearningData()
@@ -379,14 +373,14 @@ struct SettingsView: View {
         }
     }
 
-    private func confirmReset() async -> Bool {
+    private func confirmReset() -> Bool {
         let panel = NSAlert()
         panel.messageText = "重置学习记录"
         panel.informativeText = "这将删除所有学习记录和熟练度数据，不可撤销。"
         panel.alertStyle = .warning
         panel.addButton(withTitle: "确认重置")
         panel.addButton(withTitle: "取消")
-        let response = await panel.runModal()
+        let response = panel.runModal()
         return response == .alertFirstButtonReturn
     }
 
@@ -408,5 +402,4 @@ private struct WordBookUIEntry: Identifiable {
     let id: String
     var name: String
     var wordCount: Int
-    var isSelected: Bool
 }

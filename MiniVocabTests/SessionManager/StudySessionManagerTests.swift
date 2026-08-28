@@ -1,35 +1,23 @@
-import XCTest
+@preconcurrency import XCTest
 import SwiftData
 @testable import MiniVocab
 
 @MainActor
 final class StudySessionManagerTests: XCTestCase {
 
-    private var persistence: PersistenceController!
-    private var scheduler: SimpleSpacedRepetitionScheduler!
-    private var sessionManager: StudySessionManager!
-    private var book: WordBook!
+    private nonisolated(unsafe) var fixture: StudySessionFixture!
+    private var persistence: PersistenceController { fixture.persistence }
+    private var scheduler: SimpleSpacedRepetitionScheduler { fixture.scheduler }
+    private var sessionManager: StudySessionManager { fixture.sessionManager }
+    private var book: WordBook { fixture.book }
 
     override func setUp() {
         super.setUp()
-        let schema = Schema([Word.self, WordBook.self, ReviewRecord.self, LearningState.self])
-        let modelConfig = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
-        let container = try! ModelContainer(for: schema, configurations: [modelConfig])
-        persistence = PersistenceController(modelContainer: container)
-        scheduler = SimpleSpacedRepetitionScheduler()
-        sessionManager = StudySessionManager(persistence: persistence, scheduler: scheduler)
-
-        // Create a default book
-        book = WordBook(id: "test_book", name: "Test Book")
-        persistence.modelContainer.mainContext.insert(book)
-        try? persistence.save()
+        fixture = MainActor.assumeIsolated { StudySessionFixture() }
     }
 
     override func tearDown() {
-        persistence = nil
-        scheduler = nil
-        sessionManager = nil
-        book = nil
+        fixture = nil
         super.tearDown()
     }
 
@@ -39,7 +27,6 @@ final class StudySessionManagerTests: XCTestCase {
         persistence.modelContainer.mainContext.insert(word)
 
         // Add word to the local book reference directly (kept as managed instance)
-        if book.words == nil { book.words = [] }
         book.words.append(word)
         try persistence.save()
     }
@@ -241,7 +228,28 @@ final class StudySessionManagerTests: XCTestCase {
         book.isEnabled = true
         try persistence.save()
         let wordIds = book.words.map(\.id)
-        try sessionManager.startSession(for: book, wordIds: wordIds)
+        sessionManager.startSession(for: book, wordIds: wordIds)
     }
 
+}
+
+@MainActor
+private final class StudySessionFixture {
+    let persistence: PersistenceController
+    let scheduler: SimpleSpacedRepetitionScheduler
+    let sessionManager: StudySessionManager
+    let book: WordBook
+
+    init() {
+        let schema = Schema([Word.self, WordBook.self, ReviewRecord.self, LearningState.self])
+        let modelConfig = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
+        let container = try! ModelContainer(for: schema, configurations: [modelConfig])
+        persistence = PersistenceController(modelContainer: container)
+        scheduler = SimpleSpacedRepetitionScheduler()
+        sessionManager = StudySessionManager(persistence: persistence, scheduler: scheduler)
+
+        book = WordBook(id: "test_book", name: "Test Book")
+        persistence.modelContainer.mainContext.insert(book)
+        try? persistence.save()
+    }
 }

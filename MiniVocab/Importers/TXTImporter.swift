@@ -38,6 +38,11 @@ final class TXTImporter: WordBookImporter {
     }
 
     private func parseLine(_ line: String) -> ParsedLine {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        if isHeaderLine(trimmed) {
+            return ParsedLine(word: nil, phonetic: nil, meaning: nil, example: nil, exampleTranslation: nil)
+        }
+
         // Try pipe separator: "word | meaning"
         if line.contains("|") {
             let parts = line.components(separatedBy: "|")
@@ -57,34 +62,33 @@ final class TXTImporter: WordBookImporter {
 
         // Try space-separated: "word meaning" (first word + rest)
         // Skip lines that look like headers
-        let trimmed = line.trimmingCharacters(in: .whitespaces)
-        if isHeaderLine(trimmed) { return ParsedLine(word: nil, phonetic: nil, meaning: nil, example: nil, exampleTranslation: nil) }
-
         // Check if line starts with a phonetic prefix: "/.../ word meaning"
-        if let range = trimmed.range(of: "^/[^/]*/"), let slashEnd = trimmed.range(of: "/", range: range).map(\.upperBound) {
+        if trimmed.hasPrefix("/"),
+           let closingSlash = trimmed.dropFirst().firstIndex(of: "/") {
+            let slashEnd = trimmed.index(after: closingSlash)
             let phonetic = String(trimmed[..<slashEnd])
             let rest = trimmed[slashEnd...].trimmingCharacters(in: .whitespaces)
-            let restComponents = rest.components(separatedBy: " ").filter { !$0.isEmpty }
+            let restComponents = rest.split(whereSeparator: \.isWhitespace)
             guard !restComponents.isEmpty else {
                 return ParsedLine(word: trimmed, phonetic: nil, meaning: nil, example: nil, exampleTranslation: nil)
             }
             return ParsedLine(
-                word: restComponents[0],
+                word: String(restComponents[0]),
                 phonetic: phonetic,
-                meaning: restComponents[1..<restComponents.count].joined(separator: " "),
+                meaning: restComponents.dropFirst().joined(separator: " "),
                 example: nil,
                 exampleTranslation: nil
             )
         }
 
-        let components = trimmed.components(separatedBy: " ")
+        let components = trimmed.split(whereSeparator: \.isWhitespace)
         guard components.count >= 2 else {
             return ParsedLine(word: trimmed, phonetic: nil, meaning: nil, example: nil, exampleTranslation: nil)
         }
         return ParsedLine(
-            word: components[0],
+            word: String(components[0]),
             phonetic: nil,
-            meaning: components[1..<components.count].joined(separator: " "),
+            meaning: components.dropFirst().joined(separator: " "),
             example: nil,
             exampleTranslation: nil
         )
@@ -95,8 +99,6 @@ final class TXTImporter: WordBookImporter {
             return ParsedLine(word: parts.first, phonetic: nil, meaning: nil, example: nil, exampleTranslation: nil)
         }
 
-        let firstLower = parts[0].lowercased()
-        _ = firstLower
         // Check if first part looks like a phonetic (starts with /)
         if parts[0].hasPrefix("/"), parts.count >= 3 {
             return ParsedLine(
@@ -118,8 +120,16 @@ final class TXTImporter: WordBookImporter {
     }
 
     private func isHeaderLine(_ line: String) -> Bool {
-        let lower = line.lowercased()
-        let headers = ["word", "english", "term", "vocabulary", "单词", "meaning", "definition", "释义"]
-        return headers.contains { lower == $0 }
+        let parts = line.split(whereSeparator: \.isWhitespace).map { $0.lowercased() }
+        guard let first = parts.first else { return false }
+
+        let wordHeaders = ["word", "english", "term", "vocabulary", "单词"]
+        let meaningHeaders = ["meaning", "definition", "translation", "chinese", "释义", "中文"]
+
+        if parts.count == 1 {
+            return wordHeaders.contains(first) || meaningHeaders.contains(first)
+        }
+
+        return wordHeaders.contains(first) && meaningHeaders.contains(parts[1])
     }
 }

@@ -138,7 +138,7 @@ final class SimpleSpacedRepetitionSchedulerTests: XCTestCase {
     }
 
     func testMasteredStateDetected() {
-        var state = LearningState(wordId: "test")
+        let state = LearningState(wordId: "test")
         state.stability = 25000.0
         state.difficulty = 1.0
         state.reviewCount = 10

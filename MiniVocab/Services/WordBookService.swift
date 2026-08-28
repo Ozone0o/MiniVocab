@@ -81,7 +81,7 @@ final class WordBookService {
 
         // If deleting the active book, clear session
         if book.isEnabled {
-            try? sessionManager?.clearSession()
+            sessionManager?.clearSession()
         }
     }
 
@@ -139,7 +139,7 @@ final class WordBookService {
 
         // Start session: load book words into the session manager (does NOT modify WordBook.isEnabled)
         let wordIds = book.words.map(\.id)
-        try sessionManager?.startSession(for: book, wordIds: wordIds)
+        sessionManager?.startSession(for: book, wordIds: wordIds)
     }
 
     func renameWordBook(id: String, newName: String) throws {

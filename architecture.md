@@ -2,92 +2,128 @@
 
 ## Overview
 
-MiniVocab is a minimalist macOS floating word-card app built with SwiftUI + AppKit (NSPanel).
-It stays always-on-top, never steals focus, and provides spaced-repetition word learning
-with offline-first, local-only data storage using Core Data.
+MiniVocab is a macOS floating vocabulary card built with SwiftUI, AppKit, and SwiftData. The application is offline-first: vocabulary books, learning progress, review records, and preferences are kept locally on the user's Mac.
 
-## Core Principles
+The existing product flow is:
 
-1. **Minimal UI** — Only word + settings gear on the floating window.
-2. **Two-state cards** — Question State (word + example) → Answer State (definition + ratings).
-3. **Focus discipline** — Window never steals focus; only reacts when clicked.
-4. **Decoupled layers** — Scheduler, Importers, UI, and Persistence are independent modules.
-5. **Offline-first** — All data stored locally; no network calls.
+```text
+Import a local vocabulary file
+    → create and manage a vocabulary book
+    → select a book and start learning
+    → show a word, example, meaning, and pronunciation
+    → record a rating
+    → schedule the next review
+    → persist progress locally
+    → restore the active book on the next launch
+```
+
+This document describes the current implementation. It is not a proposal for changing the learning experience.
 
 ## Module Structure
 
-```
+```text
 MiniVocab/
 ├── App/
-│   └── MiniVocabApp.swift          # SwiftUI App entry, window & settings setup
+│   └── MiniVocabApp.swift                 # SwiftUI App entry and WindowGroup
 ├── Models/
-│   ├── Word.swift                  # Word entity (SwiftData/Core Data model)
-│   ├── WordBook.swift              # WordBook entity
-│   ├── ReviewRecord.swift          # ReviewRecord entity
-│   └── LearningState.swift         # LearningState entity
+│   ├── Word.swift                          # SwiftData Word model
+│   ├── WordBook.swift                      # SwiftData WordBook model
+│   ├── ReviewRecord.swift                  # SwiftData review history model
+│   ├── LearningState.swift                 # SwiftData per-word learning state
+│   └── AppSettings.swift                   # UserDefaults-backed SettingsStore
 ├── Persistence/
-│   └── PersistenceController.swift # Core Data stack / SwiftData container
-├── Scheduler/
-│   ├── ReviewScheduler.swift       # Scheduler protocol
-│   └── SimpleSpacedRepetitionScheduler.swift # First-implement scheduler
+│   └── PersistenceController.swift         # SwiftData ModelContainer and queries
 ├── Importers/
-│   ├── WordBookImporter.swift      # Importer protocol
-│   ├── CSVImporter.swift
-│   ├── TSVImporter.swift
-│   ├── TXTImporter.swift
-│   └── JSONImporter.swift
+│   ├── WordBookImporter.swift              # Importer protocol and ImportedWord
+│   ├── CSVImporter.swift                   # CSV parser and column detection
+│   ├── TSVImporter.swift                   # Tab-separated importer
+│   ├── TXTImporter.swift                   # Line-based text importer
+│   └── JSONImporter.swift                  # JSON array importer
+├── Scheduler/
+│   ├── ReviewScheduler.swift               # Rating and scheduler protocol
+│   └── SimpleSpacedRepetitionScheduler.swift
 ├── Services/
-│   ├── StudySessionManager.swift   # Session logic: picks next word
-│   └── WordBookService.swift       # CRUD for word books
+│   ├── StudySessionManager.swift            # Round/group session state
+│   ├── WordBookService.swift                # Word-book CRUD, import, and export
+│   └── ExampleDatabase.swift                # Bundled SQLite example lookup
 ├── Window/
-│   └── FloatingWindowController.swift  # FocusManager + NSPanel lifecycle
+│   └── FloatingWindowController.swift       # NSWindow configuration and focus
 ├── ViewModels/
-│   └── FloatingWordViewModel.swift   # State machine: Question ↔ Answer
+│   └── FloatingWordViewModel.swift          # Question/answer state machine
 └── Views/
-    ├── FloatingWordView.swift      # Main floating card UI
-    ├── SettingsView.swift          # Settings window content
-    ├── WordBookSettingsView.swift  # Word book management
-    └── ImportPreviewView.swift     # Field mapping + import preview
+    ├── FloatingWordView.swift               # Main floating card
+    └── SettingsView.swift                  # Appearance, books, and data settings
 ```
 
-## Data Flow
+## Application and Window Lifecycle
 
-```
-Core Data (Models)
-    ↑↓
-PersistenceController
-    ↑↓
-StudySessionManager ←→ ReviewScheduler
-    ↑↓
-FloatingWordViewModel
-    ↑↓
-FloatingWordView
-```
+- `MiniVocabApp` creates the main `WindowGroup`, the shared `SettingsStore`, the persistence controller, the scheduler, and the study session manager.
+- `WindowAccessor` obtains the `NSWindow` created by SwiftUI.
+- `FloatingWindowConfigurator` applies the existing title-bar, resize, movement, opacity, and always-on-top settings to that `NSWindow`.
+- `FocusManager` records the previous frontmost application during interaction and restores it after a rating.
+- The settings screen is presented from the floating window as a sheet. Escape dismisses it.
 
-## Focus Model
+## Data and Persistence
 
-```
-Idle (not focused)
-    ← user clicks panel →
-Interactive
-    ← user rates word →
-Restore previous app
+`PersistenceController` creates one SwiftData `ModelContainer` for the four existing models:
+
+```text
+Word
+WordBook → words
+LearningState → wordId
+ReviewRecord → wordId
 ```
 
-## Scheduler Protocol
+The production container is not in-memory and has no repository-relative store URL, so SwiftData manages the database in the normal macOS application data location. The source tree does not contain or generate the runtime database.
 
-```swift
-protocol ReviewScheduler {
-    func nextReviewInterval(for state: LearningState, rating: Rating) -> Int
-    func difficultyModifier(for state: LearningState) -> Double
-}
+`SettingsStore` persists appearance, window, study-order, session-size, and selected-book settings through `UserDefaults`. No SwiftData schema or persistence semantics are changed by the repository cleanup.
+
+## Importers
+
+`WordBookImporter` exposes `canImport(fileURL:)` and `importWords(fileURL:)`. `WordBookService` selects the first compatible importer and creates the `WordBook` and associated `Word` objects.
+
+Supported formats and current behavior:
+
+- **CSV** — header-based comma-delimited input. The parser handles quoted fields, commas inside quotes, escaped quotes (two consecutive quotes), UTF-8 BOM, empty fields, CRLF/LF line endings, and quoted line breaks. Incomplete rows are skipped using the existing best-effort import behavior.
+- **TSV** — header-based tab-delimited input.
+- **TXT** — one word and meaning per line, with space, tab, or pipe separators; phonetic prefixes such as `/ipa/` are supported.
+- **JSON** — an array of objects with the existing flexible word, meaning, phonetic, example, and translation field names.
+
+Importer parsing does not change the import button, file picker, supported extensions, `WordBook` model, or study flow.
+
+## Study Session and Scheduler
+
+`StudySessionManager` keeps the existing session state in memory and coordinates it with persistence:
+
+- New words are presented in rounds according to the configured words-per-round value.
+- Groups contain the configured number of rounds.
+- Sequential and random order use the existing settings.
+- Overdue long-term reviews are considered before another new round.
+- Weak words are re-queued and may enter group review.
+- Ratings are passed to `SimpleSpacedRepetitionScheduler`, which updates `LearningState` and creates a `ReviewRecord`.
+
+`FloatingWordViewModel` presents the question state, reveals the answer state, records the selected rating, and loads the next word.
+
+## Bundled Resource
+
+`MiniVocab/Resources/examples.sqlite` is a required read-only application resource. `ExampleDatabase` verifies the `examples(word, sentence)` table and looks up an example when a word does not already have one. It is separate from SwiftData and from user vocabulary books.
+
+The repository does not claim authorship or licensing for the sentence corpus. Its provenance and redistribution terms must be confirmed before a public release.
+
+## Repository and User Data Boundary
+
+```text
+Repository
+├── source code
+├── tests
+├── documentation
+└── required application resources (examples.sqlite)
+
+User's Mac
+├── imported vocabulary books (CSV / TSV / TXT / JSON)
+├── SwiftData learning database
+├── UserDefaults preferences
+└── exported learning data
 ```
 
-## Importer Protocol
-
-```swift
-protocol WordBookImporter {
-    func canImport(fileURL: URL) -> Bool
-    func importWords(fileURL: URL) throws -> [Word]
-}
-```
+Personal vocabulary, learning history, runtime databases, preferences, exports, build products, and debug symbols do not belong in the Git repository.

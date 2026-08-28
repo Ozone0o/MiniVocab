@@ -16,7 +16,7 @@ public struct PersistenceController {
         self.modelContainer = modelContainer
     }
 
-public init(isPreview: Bool = false) {
+    public init(isPreview: Bool = false) {
         if isPreview {
             self.modelContainer = PersistenceController.preview.modelContainer
         } else {

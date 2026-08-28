@@ -262,7 +262,7 @@ final class StudySessionManager {
         roundPassedWords = .init()
         introducedWordIds.formUnion(newWords.map(\.id))
 
-        return try nextFromCurrentRound()
+        return nextFromCurrentRound()
     }
 
     // MARK: - Record Rating

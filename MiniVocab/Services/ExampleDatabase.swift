@@ -55,7 +55,16 @@ final class ExampleDatabase {
 
     /// Load the database from the bundle
     static func load() -> ExampleDatabase? {
-        guard let bundlePath = Bundle.main.path(forResource: "examples", ofType: "sqlite") else {
+        #if SWIFT_PACKAGE
+        // Swift Package builds place resources in the generated module bundle,
+        // while an exported app may place them directly in the main bundle.
+        let bundlePath = Bundle.main.path(forResource: "examples", ofType: "sqlite")
+            ?? Bundle.module.path(forResource: "examples", ofType: "sqlite")
+        #else
+        let bundlePath = Bundle.main.path(forResource: "examples", ofType: "sqlite")
+        #endif
+
+        guard let bundlePath else {
             print("[MiniVocab] examples.sqlite not found in bundle resources")
             return nil
         }

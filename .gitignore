@@ -1,7 +1,8 @@
 # Build outputs
 .build/
 BuildOutput/
-*.xcarchive/
+*.xcarchive
+*.app/
 *.dmg
 ExportOptions.plist
 
@@ -23,3 +24,36 @@ DerivedData/
 
 # macOS
 .DS_Store
+
+# User data / personal vocabulary
+IELTS_Core_Vocab.csv
+IELTS_Core_Vocab.txt
+IELTS_3000_Vocab.txt
+
+# Runtime data
+*.sqlite
+!MiniVocab/Resources/examples.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite-journal
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+*.store
+*.store-shm
+*.store-wal
+*.store-journal
+default.profraw
+
+# Debug symbols
+*.dSYM/
+
+# User data directories
+UserData/
+LocalVocabulary/
+backup/
+
+# Local tooling metadata
+.swiftpm/
+.phanthy-code/
