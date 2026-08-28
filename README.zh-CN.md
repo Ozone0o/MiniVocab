@@ -7,8 +7,10 @@
 很多时候不是没有时间背单词，而是只有几十秒空闲时，你不会专门打开一个背单词 App。把 MiniVocab 放在正在工作的窗口旁边：写代码、看网页、读论文，等编译或任务切换时看一眼，想一下，然后继续手里的事情。
 
 <p align="center">
-  <a href="https://github.com/Ozone0o/MiniVocab/releases/latest"><strong>下载 macOS 版本</strong></a>
+  <a href="https://raw.githubusercontent.com/Ozone0o/MiniVocab/main/MiniVocab.dmg"><strong>直接下载 MiniVocab（macOS）</strong></a>
 </p>
+
+直接下载 DMG，打开后将 `MiniVocab.app` 拖到“应用程序”文件夹即可。
 
 <p align="center">
   <img src="docs/hero.png" width="900" alt="MiniVocab 待在桌面工作环境旁边">
@@ -79,7 +81,6 @@ resilient,有韧性的,She remained resilient after the setback.
 MiniVocab 不需要账号。词书和学习进度留在你的 Mac 上：SwiftData 保存词书和复习状态，UserDefaults 保存外观及学习设置。学习数据可以在“数据”设置中导出为 JSON。
 
 仓库里的 `examples.sqlite` 是只读的应用资源，用来在导入的单词没有例句时查找例句。
-
 
 环境要求：
 

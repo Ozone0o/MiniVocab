@@ -4,6 +4,7 @@ BuildOutput/
 *.xcarchive
 *.app/
 *.dmg
+!MiniVocab.dmg
 ExportOptions.plist
 
 # Xcode

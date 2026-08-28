@@ -7,8 +7,10 @@ A small macOS vocabulary card designed to live beside whatever you're already do
 Instead of opening a vocabulary app whenever you want to study, keep MiniVocab near your work. Glance at a word while code is compiling, a page is loading, or a task is between steps; recall what you can, then continue.
 
 <p align="center">
-  <a href="https://github.com/Ozone0o/MiniVocab/releases/latest"><strong>Download for macOS</strong></a>
+  <a href="https://raw.githubusercontent.com/Ozone0o/MiniVocab/main/MiniVocab.dmg"><strong>Download MiniVocab for macOS</strong></a>
 </p>
+
+Download the DMG directly, open it, and drag `MiniVocab.app` to `Applications`.
 
 <p align="center">
   <img src="docs/hero.png" width="900" alt="MiniVocab floating beside a desktop workspace">
